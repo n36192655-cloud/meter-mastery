@@ -1,87 +1,109 @@
-> **Blocker to note first:** this Lovable project is still the empty starter template. The app (`src/lib/store.ts`, `supabase/migrations/*`) exists only inside the uploaded zip. Nothing below can be applied until the codebase is imported into this project and Cloud is enabled. The plan itself is ready to execute the moment it is.
+# Meter & Reading Architecture Migration Plan
 
-## 1. Current state
+## 1. Current state (verified against the live imported data)
 
-**Meters do not exist.** There is no `meters` table. What the UI calls a "meter" is fabricated at hydration time in `store.ts`:
+- 100 customers, each with exactly one non-empty `meter_number`; 100 distinct meter numbers.
+- 1,000 readings, all with a `customer_id`; 100 distinct `meter_number` values; **zero** cases of one meter number mapping to two customers.
+- No meter table exists. Meters are invented in the browser (`src/lib/store.ts`) by hashing `customer_id + meter_number` into a numeric id that is not stable across sessions.
+- Readings join to a "meter" by free-text string match on `meter_number`; previous-reading lookup in `tg_reading_before_insert` also matches on that string.
+- Consequence: renaming or replacing a meter breaks history, and there are two competing meter models (DB text field vs. client-synthesized object).
 
-```text
-customers.meter_number ─┐
-                        ├─► addMeter(hashId(`${customerNum}|${number}`)) ─► in-memory Meter[]
-water_readings.meter_number ─┘
-```
-
-- The meter's identity is a **client-side string hash** of customer + meter number, regenerated on every page load and persisted only in `localStorage` (`mizan-idmap-v1`).
-- `idMap.meter` maps that fake numeric id to the *meter number string*, not a database row — unlike customers/readings/bills, which map to real UUIDs.
-- Readings link to a meter by **text**: `water_readings.meter_number TEXT NOT NULL`, with no FK. Reading history, previous-reading lookup and anomaly detection in `tg_reading_before_insert` all join on `(tenant_id, meter_number)` string equality.
-- `customers.meter_number` is nullable, non-unique, and free text (no trim/normalisation, no format check). `customers_tenant_meter_idx` is a plain index, not unique.
-- A reading whose `customer_id` is null falls into a synthetic meter under `customer 0`; `water_readings.customer_id` is `ON DELETE SET NULL`, so deleting a customer orphans readings into that bucket.
-
-**Risks to live data**
-- Two customers can hold the same meter number → their readings merge into one consumption series → wrong previous-reading and wrong bills.
-- Whitespace/Arabic-digit variants of the same number silently split one meter into two series, resetting `previous` to 0 and producing a huge first consumption.
-- Changing `customers.meter_number` (meter replacement, data correction) silently rewrites history: all past readings under the old string detach, and the new string starts from 0.
-- Meter ids reset on `localStorage` clear; a stale id map can point a capture at the wrong meter.
+Good news: the data is clean and 1:1, so the backfill is deterministic with no duplicate-merge or ambiguity handling needed.
 
 ## 2. Target architecture
 
 ```text
 customers ──< meter_assignments >── meters ──< water_readings
-                (history)            (identity)     (facts)
+              (history, time-boxed)         (meter_id FK)
 ```
 
-**`public.meters`** — the single source of truth for meter identity:
-`id uuid pk`, `tenant_id`, `meter_number text not null`, `meter_number_normalized text` (generated: trimmed, Arabic→Latin digits, upper), `type text default 'water'`, `status text` (`active | replaced | removed`), `installed_at`, `removed_at`, `initial_reading numeric default 0`, `replaced_by_meter_id uuid`, `notes`, timestamps.
-Constraint: `UNIQUE (tenant_id, meter_number_normalized)` — one physical meter, one row, per tenant.
+- **meters** — the physical asset. Owns `serial` (the meter number, unique per tenant, normalized/trimmed/uppercased), type, size, install date, status (`active` / `removed` / `faulty`), initial index.
+- **meter_assignments** — which meter served which customer over which time window (`started_at`, `ended_at`). At most one open assignment per meter, and at most one open assignment per customer.
+- **water_readings** — gains `meter_id UUID NOT NULL` (after backfill). `customer_id` becomes a *derived, denormalized* column, resolved by trigger from the open assignment at reading date; it stays for billing joins but is never authored by the client.
 
-**`public.meter_assignments`** — who holds the meter, over time:
-`id`, `tenant_id`, `meter_id → meters(id)`, `customer_id → customers(id)`, `assigned_at`, `unassigned_at null`, `assigned_by`, `reason`.
-Partial unique indexes enforce: one open assignment per meter, and one open assignment per customer per meter. Current holder = row with `unassigned_at IS NULL`.
+**Source of truth after migration**
+- Meter identity: `meters.serial`. Nothing else names a meter.
+- Customer↔meter relation: `meter_assignments` only. `customers.meter_number` is dropped.
+- Reading→meter: `water_readings.meter_id` only. `water_readings.meter_number` is dropped.
+- Previous index / consumption: computed in the database from prior readings of the same `meter_id`, not on the client.
 
-**`water_readings`** gains `meter_id uuid NOT NULL REFERENCES meters(id) ON DELETE RESTRICT`. `meter_number` is kept only as a frozen historical text snapshot (renamed `meter_number_snapshot`, nullable, never read by logic). `customer_id` becomes the *billing target resolved at capture time* — set from the open assignment, `ON DELETE RESTRICT` instead of `SET NULL`.
+One meter model, in the database. The client stops synthesizing meters entirely.
 
-**Ownership of business rules** — all in the database, none in the client:
-- `previous`, `consumption`, `flag`, `status` derived in `tg_reading_before_insert`, keyed on `meter_id` instead of `meter_number`.
-- Previous reading is scoped to the *current assignment window* so a meter transferred to a new customer does not inherit the prior tenant's counter as consumption for them (counter continuity preserved; billing boundary respected).
-- `assign_meter(_meter_id, _customer_id, _reason)` / `unassign_meter` / `replace_meter(_old, _new_number, _final_reading)` as `SECURITY DEFINER` RPCs with role checks. Clients never write `meter_assignments` directly.
-- Reading capture goes through `capture_reading(_meter_id, _current, ...)` which resolves the customer from the open assignment — the client stops sending `customer_id` and `meter_number`.
+## 3. Migration steps
 
-## 3. Migration strategy
+**M1 — Foundation (additive, reversible)**
+- Create `meters`, `meter_assignments` with GRANTs, RLS (tenant read; manager write) and `updated_at` triggers.
+- Add nullable `water_readings.meter_id`.
+- Add RPCs: `assign_meter`, `replace_meter`, `unassign_meter` (SECURITY DEFINER, manager-gated, `search_path=public`).
 
-Non-destructive, in four ordered migrations; nothing is dropped until backfill is verified.
+**M2 — Backfill (data only, idempotent)**
+- Insert one `meters` row per distinct normalized `customers.meter_number`.
+- Insert one `meters` row for any reading `meter_number` not present on a customer (currently zero, but the script covers it).
+- Insert one open `meter_assignments` row per customer, `started_at` = earliest reading date for that meter (fallback `customers.created_at`).
+- Set `water_readings.meter_id` by normalized serial match. Verify 1,000/1,000 linked.
 
-**M1 — create** `meters`, `meter_assignments`, normalisation function, grants, RLS (read: tenant; write: manager via `has_tenant_role`), and RPCs. Add `water_readings.meter_id` as **nullable**.
+**M3 — Enforcement (destructive, run only after M2 verification passes)**
+- `water_readings.meter_id` → `NOT NULL` + FK `ON DELETE RESTRICT`.
+- Rewrite `tg_reading_before_insert` to look up previous index by `meter_id` and to resolve `customer_id` from the open assignment.
+- Drop `water_readings.meter_number` and `customers.meter_number`.
+- Add unique index preventing two readings for the same meter on the same date.
 
-**M2 — backfill**
-1. Insert one `meters` row per distinct normalized number found in `customers.meter_number` ∪ `water_readings.meter_number`, per tenant.
-2. Open one `meter_assignments` row per customer that has a `meter_number`, `assigned_at = customers.created_at`.
-3. Set `water_readings.meter_id` by normalized-number match.
-4. Readings whose number matches no customer get a meter with no open assignment (status `active`, unassigned) — history preserved, nothing lost.
+**M4 — Cleanup**
+- Remove the client hashing/synthesis path. No compatibility view is left behind.
 
-**Duplicates and conflicts** are surfaced, not auto-resolved:
-- Same normalized number held by 2+ customers → meter created once, assignment given to the customer with the **earliest** `created_at`; the others are written to a `meter_migration_conflicts` audit table for manual review, and their readings stay attached to the shared meter.
-- Whitespace/digit variants collapse into one meter — this *merges* previously split series and is the intended correction; the pre-merge variants are logged in the audit table.
-- Null/empty meter numbers on customers → no meter, no assignment; flagged for data entry.
+## 4. Tables affected
 
-**M3 — enforce** (the destructive step, only after the conflict report is reviewed): `meter_id SET NOT NULL`, rewrite `tg_reading_before_insert` / `issue_bill_for_reading` to key on `meter_id`, rename `meter_number` → `meter_number_snapshot`, drop `customers.meter_number` (replaced by a `customer_current_meter` view for compatibility during the code cut-over), tighten `customer_id` FK.
+| Table | Change |
+|---|---|
+| `meters` | new |
+| `meter_assignments` | new |
+| `water_readings` | `+meter_id` (NOT NULL, FK), `-meter_number` |
+| `customers` | `-meter_number` |
+| `water_bills`, `payments` | untouched — they key off `customer_id`/`reading_id`, both preserved |
+| `tenancy_logs` | keeps its own `meter_number` text for now; superseded by assignments in a later pass |
 
-**M4 — cleanup**: drop the compatibility view once the client no longer reads it.
+## 5. Data transformation
 
-Historical readings stay correct because `previous`/`consumption` values already stored are never recomputed — only future derivation changes key. The only intentional change to history is the variant merge, which is reported before M3 runs.
+- Normalize serial = `upper(btrim(meter_number))`.
+- Match is exact on the normalized serial; verified unambiguous today.
+- Assignment window start = earliest reading date per meter; end = NULL (open).
+- Readings keep their ids, dates, indexes, consumption, status, flags and their `reading_id` links from bills — billing integrity is untouched.
+- Every M2 statement is `ON CONFLICT DO NOTHING` / `WHERE meter_id IS NULL`, so re-running is safe.
 
-## 4. Implementation plan
+## 6. Rollback considerations
 
-**Code changes** (all in the imported app):
-- `store.ts`: delete `addMeter`/`meterKey` synthesis entirely; hydrate `meters` from `select * from meters` and readings' `meter_id`. `idMap.meter` maps numeric id → **meter UUID**, same as every other entity.
-- `addReadingWithBill` calls `capture_reading` RPC with `meter_id` only; stop sending `customer_id`, `meter_number`, `previous`, `consumption`.
-- Customer create/edit stops writing `customers.meter_number`; meter assignment becomes an explicit action calling `assign_meter`.
-- New Meters management surface: list, register meter, assign/unassign, replace, assignment history per meter.
-- Offline sync, billing, payments, dashboard, AI, auth left untouched except for the mechanical `meter_number → meter_id` field rename where they read readings.
+- M1 and M2 are fully reversible: drop the two new tables and the `meter_id` column; the legacy text columns are still there and still authoritative.
+- M3 is the point of no return because it drops the text columns. Before running it: take a snapshot of `customers(id, meter_number)` and `water_readings(id, meter_number)` into `public._meter_migration_backup_*` tables, kept until you confirm the app is healthy, then dropped in M4.
+- If M3 fails mid-way it is a single transaction, so it rolls back whole.
 
-**Testing plan**
-1. SQL fixtures for backfill: clean case, duplicate number across two customers, whitespace/Arabic-digit variants, reading with null customer, customer with null meter number — assert row counts and conflict-table contents.
-2. Trigger tests: first reading on a new meter (`previous = initial_reading`), rollover/decrease → `flag = error`, >3× average → `suspicious`, reading after reassignment → previous scoped to the current window.
-3. Constraint tests: duplicate meter number rejected, second open assignment for the same meter rejected, delete of a customer with readings rejected.
-4. End-to-end in the preview: register meter → assign → capture reading → approve → bill issued with the correct consumption; then replace the meter and confirm history stays attached to the old meter.
-5. Re-run the existing billing/payment flows unchanged to confirm no regression.
+## 7. Application changes
 
-**Awaiting approval before M3** — the destructive step (dropping `customers.meter_number`, `NOT NULL` on `meter_id`) will not run until you review the conflict report from M2.
+- `src/lib/store.ts`: delete `hashId`-based meter synthesis and `idMap.meter`; load real meters and assignments from the DB; readings carry `meter_id` UUIDs.
+- `src/routes/readings.tsx`: meter picker selects a `meters` row (by serial) instead of typing a string; submits `meter_id`; stops sending `meter_number`, `previous`, `consumption`.
+- `src/lib/sync.ts`: offline queue payload carries `meter_id`; keeps `client_uuid` idempotency.
+- `src/routes/customers.tsx`: meter number on the customer form becomes "assign meter" (creates/attaches a meter via RPC) rather than a free-text field.
+- `src/components/subscriber-search.tsx`, `bills.tsx`, `index.tsx`, `loss-analysis.tsx`, `ai-intent.ts`: read serial via the meter relation.
+
+## 8. Testing plan
+
+Before M3:
+- Row counts unchanged: customers 100, readings 1,000, bills 1,992, payments 890.
+- `SELECT count(*) FROM water_readings WHERE meter_id IS NULL` = 0.
+- Every meter has exactly one open assignment; no customer has two.
+- Per-meter reading history recomputed by `meter_id` matches the existing `previous`/`consumption` chain.
+
+After M3:
+- Submit a new reading through the UI → correct previous index, consumption, and auto-issued bill.
+- Submit a lower-than-previous reading → flagged and held for approval.
+- Run `replace_meter` on a customer → old assignment closed, new meter opens, old readings still attached to the old meter, next reading starts from the new meter's initial index.
+- Offline queue: submit while offline, reconnect, confirm exactly one reading (idempotency holds).
+- Typecheck + full page walk of readings, customers, bills, dashboard.
+
+## 9. Risks
+
+- **Meter replacement semantics**: consumption across a replacement must not be computed as `new_index − old_index`. Handled by scoping previous-index lookup to `(meter_id, assignment window)` and seeding from `meters.initial_index`.
+- **Dropping `customers.meter_number`** breaks any query I miss; mitigated by typecheck plus a repo-wide grep before M3, and by the backup tables.
+- **Offline clients** holding queued readings with the old payload shape at cutover — the queue is drained and the payload version is bumped so stale entries are rejected rather than silently misfiled.
+- Existing SECURITY DEFINER RPCs already trip linter warnings; the new RPCs will be written with explicit role gates and pinned `search_path`.
+
+Approve and I will run M1 + M2 first, show you the verification output, then run M3 and the app changes.

@@ -258,8 +258,10 @@ export const useStore = create<State>()(
       hydrateFromSupabase: async () => {
         const { data: userData } = await supabase.auth.getUser();
         if (!userData?.user) return;
-        const [{ data: cs }, { data: rs }, { data: bs }, { data: ps }, { data: pl }] = await Promise.all([
+        const [{ data: cs }, { data: ms }, { data: as_ }, { data: rs }, { data: bs }, { data: ps }, { data: pl }] = await Promise.all([
           supabase.from("customers").select("*").order("created_at", { ascending: true }),
+          supabase.from("meters").select("*").order("created_at", { ascending: true }),
+          supabase.from("meter_assignments").select("*").order("started_at", { ascending: true }),
           supabase.from("water_readings").select("*").order("created_at", { ascending: true }),
           supabase.from("water_bills").select("*").order("created_at", { ascending: true }),
           supabase.from("payments").select("*").order("created_at", { ascending: true }),
@@ -287,29 +289,32 @@ export const useStore = create<State>()(
 
           };
         });
-        // synthesize meters from customers.meter_number first (so a brand-new
-        // subscriber without readings still has an active meter), then from readings.
-        const meters: Meter[] = [];
-        const meterKey = new Map<string, number>();
-        const addMeter = (cnum: number, number: string | null | undefined) => {
-          if (!number) return;
-          const key = `${cnum}|${number}`;
-          if (meterKey.has(key)) return;
-          const mid = hashId(key);
-          meterKey.set(key, mid);
-          idMap.meter.set(mid, number);
-          meters.push({ id: mid, customer_id: cnum, number, type: "water", status: "active" });
-        };
-        (cs ?? []).forEach((c: any) => addMeter(hashId(c.id), c.meter_number));
-        (rs ?? []).forEach((r) => {
-          addMeter(r.customer_id ? hashId(r.customer_id) : 0, r.meter_number);
+        // Meters are real DB records now. The only customer↔meter link is the
+        // open row in meter_assignments — no client-side synthesis.
+        const openHolder = new Map<string, string>(); // meter uuid -> customer uuid
+        (as_ ?? []).forEach((a) => {
+          if (!a.ended_at) openHolder.set(a.meter_id, a.customer_id);
+        });
+        const meters: Meter[] = (ms ?? []).map((m) => {
+          const mid = hashId(m.id);
+          idMap.meter.set(mid, m.id);
+          const holder = openHolder.get(m.id);
+          return {
+            id: mid,
+            customer_id: holder ? hashId(holder) : 0,
+            number: m.serial,
+            type: (m.meter_type as MeterType) ?? "water",
+            status: (m.status === "active" ? "active" : "inactive") as Meter["status"],
+          };
         });
 
+        const meterNumericByUuid = new Map<string, number>((ms ?? []).map((m) => [m.id, hashId(m.id)]));
+        const readingMeter = new Map<string, number>();
         const readings: Reading[] = (rs ?? []).map((r) => {
           const nid = hashId(r.id);
           idMap.reading.set(nid, r.id);
-          const cnum = r.customer_id ? hashId(r.customer_id) : 0;
-          const mid = meterKey.get(`${cnum}|${r.meter_number}`) ?? 0;
+          const mid = meterNumericByUuid.get(r.meter_id) ?? 0;
+          readingMeter.set(r.id, mid);
           return {
             id: nid, serial: nextSerial("RD", nid), meter_id: mid,
             previous: Number(r.previous), current: Number(r.current_reading),
@@ -325,7 +330,7 @@ export const useStore = create<State>()(
           return {
             id: nid, serial: nextSerial("INV", nid),
             customer_id: b.customer_id ? hashId(b.customer_id) : 0,
-            meter_id: 0,
+            meter_id: b.reading_id ? (readingMeter.get(b.reading_id) ?? 0) : 0,
             reading_id: b.reading_id ? hashId(b.reading_id) : 0,
             subtotal: Number(b.subtotal), arrears: Number(b.arrears), total: Number(b.total),
             paid: Number(b.paid_amount ?? 0),

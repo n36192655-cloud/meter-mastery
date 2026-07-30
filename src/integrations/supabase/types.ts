@@ -14,7 +14,42 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      tenants: {
+        Row: {
+          arrears_threshold: number
+          auto_suspend: boolean
+          created_at: string
+          id: string
+          max_devices: number
+          name: string
+          subscription_expires_at: string | null
+          subscription_status: Database["public"]["Enums"]["subscription_status"]
+          updated_at: string
+        }
+        Insert: {
+          arrears_threshold?: number
+          auto_suspend?: boolean
+          created_at?: string
+          id?: string
+          max_devices?: number
+          name: string
+          subscription_expires_at?: string | null
+          subscription_status?: Database["public"]["Enums"]["subscription_status"]
+          updated_at?: string
+        }
+        Update: {
+          arrears_threshold?: number
+          auto_suspend?: boolean
+          created_at?: string
+          id?: string
+          max_devices?: number
+          name?: string
+          subscription_expires_at?: string | null
+          subscription_status?: Database["public"]["Enums"]["subscription_status"]
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
@@ -23,7 +58,8 @@ export type Database = {
       [_ in never]: never
     }
     Enums: {
-      [_ in never]: never
+      app_role: "super_admin" | "manager" | "reader" | "collector"
+      subscription_status: "active" | "suspended" | "expired"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +186,9 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      app_role: ["super_admin", "manager", "reader", "collector"],
+      subscription_status: ["active", "suspended", "expired"],
+    },
   },
 } as const

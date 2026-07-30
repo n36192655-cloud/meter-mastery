@@ -176,6 +176,108 @@ export type Database = {
           },
         ]
       }
+      meter_assignments: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          customer_id: string
+          end_reason: string | null
+          ended_at: string | null
+          id: string
+          meter_id: string
+          note: string | null
+          started_at: string
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          customer_id: string
+          end_reason?: string | null
+          ended_at?: string | null
+          id?: string
+          meter_id: string
+          note?: string | null
+          started_at?: string
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          customer_id?: string
+          end_reason?: string | null
+          ended_at?: string | null
+          id?: string
+          meter_id?: string
+          note?: string | null
+          started_at?: string
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "meter_assignments_customer_id_fkey"
+            columns: ["customer_id"]
+            isOneToOne: false
+            referencedRelation: "customers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "meter_assignments_meter_id_fkey"
+            columns: ["meter_id"]
+            isOneToOne: false
+            referencedRelation: "meters"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      meters: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          id: string
+          initial_index: number
+          installed_at: string | null
+          meter_type: string
+          notes: string | null
+          serial: string
+          size: string | null
+          status: string
+          tenant_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          initial_index?: number
+          installed_at?: string | null
+          meter_type?: string
+          notes?: string | null
+          serial: string
+          size?: string | null
+          status?: string
+          tenant_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          initial_index?: number
+          installed_at?: string | null
+          meter_type?: string
+          notes?: string | null
+          serial?: string
+          size?: string | null
+          status?: string
+          tenant_id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       payments: {
         Row: {
           amount: number
@@ -626,6 +728,7 @@ export type Database = {
           id: string
           lat: number | null
           lng: number | null
+          meter_id: string | null
           meter_number: string
           ocr_serial: string | null
           photo_url: string | null
@@ -649,6 +752,7 @@ export type Database = {
           id?: string
           lat?: number | null
           lng?: number | null
+          meter_id?: string | null
           meter_number: string
           ocr_serial?: string | null
           photo_url?: string | null
@@ -672,6 +776,7 @@ export type Database = {
           id?: string
           lat?: number | null
           lng?: number | null
+          meter_id?: string | null
           meter_number?: string
           ocr_serial?: string | null
           photo_url?: string | null
@@ -691,6 +796,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "water_readings_meter_id_fkey"
+            columns: ["meter_id"]
+            isOneToOne: false
+            referencedRelation: "meters"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "water_readings_tenant_id_fkey"
             columns: ["tenant_id"]
             isOneToOne: false
@@ -706,6 +818,16 @@ export type Database = {
     Functions: {
       approve_payment: { Args: { _payment_id: string }; Returns: undefined }
       approve_reading: { Args: { _reading_id: string }; Returns: undefined }
+      assign_meter: {
+        Args: {
+          _customer_id: string
+          _initial_index?: number
+          _installed_at?: string
+          _meter_type?: string
+          _serial: string
+        }
+        Returns: string
+      }
       current_tenant_id: { Args: never; Returns: string }
       email_for_username: { Args: { _username: string }; Returns: string }
       has_role: {
@@ -756,6 +878,20 @@ export type Database = {
       }
       reject_payment: {
         Args: { _payment_id: string; _reason?: string }
+        Returns: undefined
+      }
+      replace_meter: {
+        Args: {
+          _customer_id: string
+          _new_initial_index?: number
+          _new_serial: string
+          _old_meter_status?: string
+          _reason?: string
+        }
+        Returns: string
+      }
+      unassign_meter: {
+        Args: { _customer_id: string; _reason?: string }
         Returns: undefined
       }
     }

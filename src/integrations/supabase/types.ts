@@ -14,6 +14,51 @@ export type Database = {
   }
   public: {
     Tables: {
+      _meter_migration_backup_customers: {
+        Row: {
+          id: string | null
+          meter_number: string | null
+          tenant_id: string | null
+        }
+        Insert: {
+          id?: string | null
+          meter_number?: string | null
+          tenant_id?: string | null
+        }
+        Update: {
+          id?: string | null
+          meter_number?: string | null
+          tenant_id?: string | null
+        }
+        Relationships: []
+      }
+      _meter_migration_backup_readings: {
+        Row: {
+          consumption: number | null
+          customer_id: string | null
+          id: string | null
+          meter_number: string | null
+          previous: number | null
+          tenant_id: string | null
+        }
+        Insert: {
+          consumption?: number | null
+          customer_id?: string | null
+          id?: string | null
+          meter_number?: string | null
+          previous?: number | null
+          tenant_id?: string | null
+        }
+        Update: {
+          consumption?: number | null
+          customer_id?: string | null
+          id?: string | null
+          meter_number?: string | null
+          previous?: number | null
+          tenant_id?: string | null
+        }
+        Relationships: []
+      }
       audit_logs: {
         Row: {
           action: string
@@ -67,7 +112,6 @@ export type Database = {
           id: string
           latitude: number | null
           longitude: number | null
-          meter_number: string | null
           name: string
           pay_account: string | null
           phone: string | null
@@ -90,7 +134,6 @@ export type Database = {
           id?: string
           latitude?: number | null
           longitude?: number | null
-          meter_number?: string | null
           name: string
           pay_account?: string | null
           phone?: string | null
@@ -113,7 +156,6 @@ export type Database = {
           id?: string
           latitude?: number | null
           longitude?: number | null
-          meter_number?: string | null
           name?: string
           pay_account?: string | null
           phone?: string | null
@@ -728,8 +770,7 @@ export type Database = {
           id: string
           lat: number | null
           lng: number | null
-          meter_id: string | null
-          meter_number: string
+          meter_id: string
           ocr_serial: string | null
           photo_url: string | null
           previous: number | null
@@ -752,8 +793,7 @@ export type Database = {
           id?: string
           lat?: number | null
           lng?: number | null
-          meter_id?: string | null
-          meter_number: string
+          meter_id: string
           ocr_serial?: string | null
           photo_url?: string | null
           previous?: number | null
@@ -776,8 +816,7 @@ export type Database = {
           id?: string
           lat?: number | null
           lng?: number | null
-          meter_id?: string | null
-          meter_number?: string
+          meter_id?: string
           ocr_serial?: string | null
           photo_url?: string | null
           previous?: number | null

@@ -21,6 +21,8 @@ import type { Database } from "@/integrations/supabase/types";
 type CustomerRow = Database["public"]["Tables"]["customers"]["Row"];
 type ReadingRow = Database["public"]["Tables"]["water_readings"]["Row"];
 type BillRow = Database["public"]["Tables"]["water_bills"]["Row"];
+type MeterRow = Database["public"]["Tables"]["meters"]["Row"];
+type AssignmentRow = Database["public"]["Tables"]["meter_assignments"]["Row"];
 
 export const Route = createFileRoute("/readings")({
   head: () => ({ meta: [{ title: "القراءات — ميزان" }] }),
@@ -33,13 +35,15 @@ function ReadingsPage() {
   const tenantId = user?.tenantId;
 
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
+  const [meters, setMeters] = useState<MeterRow[]>([]);
+  const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [readings, setReadings] = useState<ReadingRow[]>([]);
   const [bills, setBills] = useState<BillRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [q, setQ] = useState("");
   const [customerId, setCustomerId] = useState<string | null>(null);
-  const [meterNumber, setMeterNumber] = useState<string>("");
+  const [meterId, setMeterId] = useState<string | null>(null);
   const [current, setCurrent] = useState<string>("");
   const [cameraOpen, setCameraOpen] = useState(false);
   const [photoBlob, setPhotoBlob] = useState<Blob | null>(null);
@@ -51,25 +55,44 @@ function ReadingsPage() {
   const [tab, setTab] = useState<"input" | "pending" | "log" | "bills">("input");
 
   const selectedCustomer = customerId ? customers.find((c) => c.id === customerId) ?? null : null;
+
+  // Single source of truth for customer↔meter: the open row in meter_assignments.
+  const meterById = useMemo(() => new Map(meters.map((m) => [m.id, m])), [meters]);
+  const meterByCustomer = useMemo(() => {
+    const map = new Map<string, MeterRow>();
+    assignments
+      .filter((a) => !a.ended_at)
+      .forEach((a) => {
+        const m = meterById.get(a.meter_id);
+        if (m) map.set(a.customer_id, m);
+      });
+    return map;
+  }, [assignments, meterById]);
+  const selectedMeter = meterId ? meterById.get(meterId) ?? null : null;
+  const meterNumber = selectedMeter?.serial ?? "";
+
   const lastReading = useMemo(() => {
-    if (!meterNumber) return null;
-    const norm = meterNumber.trim().toUpperCase();
+    if (!meterId) return null;
     return readings
-      .filter((r) => r.meter_number.toUpperCase() === norm)
+      .filter((r) => r.meter_id === meterId && r.status !== "rejected")
       .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))[0] ?? null;
-  }, [readings, meterNumber]);
+  }, [readings, meterId]);
 
   // Initial fetch (RLS scopes automatically by tenant)
   const refresh = useCallback(async () => {
     if (!tenantId) return;
     setLoading(true);
-    const [cs, rs, bs] = await Promise.all([
+    const [cs, ms, asg, rs, bs] = await Promise.all([
       supabase.from("customers").select("*").order("name"),
+      supabase.from("meters").select("*").order("serial"),
+      supabase.from("meter_assignments").select("*").order("started_at", { ascending: false }),
       supabase.from("water_readings").select("*").order("created_at", { ascending: false }).limit(500),
       supabase.from("water_bills").select("*").order("created_at", { ascending: false }).limit(500),
     ]);
     if (cs.error) toast.error("تعذّر جلب المشتركين");
     else setCustomers(cs.data ?? []);
+    if (!ms.error) setMeters(ms.data ?? []);
+    if (!asg.error) setAssignments(asg.data ?? []);
     if (!rs.error) setReadings(rs.data ?? []);
     if (!bs.error) setBills(bs.data ?? []);
     setLoading(false);
@@ -137,16 +160,19 @@ function ReadingsPage() {
     const norm = (v: string) => v.toLowerCase().replace(/[-\s]/g, "");
     return customers.filter((c) => {
       if (c.name.toLowerCase().includes(query)) return true;
-      if (c.meter_number && norm(c.meter_number).includes(norm(query))) return true;
+      const serial = meterByCustomer.get(c.id)?.serial;
+      if (serial && norm(serial).includes(norm(query))) return true;
       if (c.phone && c.phone.includes(query)) return true;
       return false;
     }).slice(0, 15);
-  }, [q, customers]);
+  }, [q, customers, meterByCustomer]);
 
   function pickCustomer(c: CustomerRow) {
+    const m = meterByCustomer.get(c.id) ?? null;
     setCustomerId(c.id);
-    setMeterNumber(c.meter_number ?? "");
-    setQ(`${c.name}${c.meter_number ? " · " + c.meter_number : ""}`);
+    setMeterId(m?.id ?? null);
+    setQ(`${c.name}${m ? " · " + m.serial : ""}`);
+    if (!m) toast.error("لا يوجد عداد مرتبط بهذا المشترك — اربط عداداً من صفحة المشتركين");
   }
 
   function handleOcr(res: OcrResult) {
@@ -189,7 +215,7 @@ function ReadingsPage() {
   async function saveReading() {
     if (!tenantId || !user) return toast.error("لا توجد جلسة نشطة");
     if (!selectedCustomer) return toast.error("اختر مشتركاً");
-    if (!meterNumber.trim()) return toast.error("رقم العداد مطلوب");
+    if (!selectedMeter) return toast.error("لا يوجد عداد مرتبط بهذا المشترك");
     if (current === "" || Number.isNaN(+current)) return toast.error("أدخل القراءة الحالية");
 
     if (ocrSerial &&
@@ -220,8 +246,9 @@ function ReadingsPage() {
       // 2) Insert reading — triggers compute previous/consumption + bill
       const { error } = await supabase.from("water_readings").insert({
         tenant_id: tenantId,
-        customer_id: selectedCustomer.id,
-        meter_number: meterNumber.trim(),
+        // customer_id / previous / consumption / status are derived server-side
+        // from the meter and its active assignment.
+        meter_id: selectedMeter.id,
         current_reading: +current,
         reader_id: user.userId,
         photo_url: photoUrl,
@@ -312,7 +339,7 @@ function ReadingsPage() {
                       className="w-full text-right p-2 hover:bg-muted/50 text-sm flex justify-between items-center gap-3">
                       <span className="font-medium">{c.name}</span>
                       <span className="text-xs text-muted-foreground font-mono" dir="ltr">
-                        {c.meter_number ?? "بدون عداد"} · {c.phone ?? "—"}
+                        {meterByCustomer.get(c.id)?.serial ?? "بدون عداد"} · {c.phone ?? "—"}
                       </span>
                     </button>
                   ))}
@@ -332,7 +359,8 @@ function ReadingsPage() {
             <div className="grid md:grid-cols-2 gap-3">
               <div>
                 <Label>رقم العداد</Label>
-                <Input value={meterNumber} onChange={(e) => setMeterNumber(e.target.value)} dir="ltr" className="font-mono" />
+                <Input value={meterNumber} readOnly dir="ltr" className="font-mono bg-muted/40"
+                  placeholder="يُحدَّد تلقائياً من العداد المرتبط بالمشترك" />
               </div>
               <div>
                 <Label>القراءة الحالية</Label>
@@ -381,7 +409,7 @@ function ReadingsPage() {
               return (
                 <div key={r.id} className="rounded-lg border p-3 grid md:grid-cols-[1fr_auto] gap-3 items-start">
                   <div className="text-xs space-y-1">
-                    <div className="text-sm font-semibold">{c?.name ?? "—"} — <span className="font-mono">{r.meter_number}</span></div>
+                    <div className="text-sm font-semibold">{c?.name ?? "—"} — <span className="font-mono">{meterById.get(r.meter_id)?.serial ?? "—"}</span></div>
                     <div className="text-muted-foreground">
                       قراءة {r.previous} → <span className="text-foreground font-mono">{r.current_reading}</span> · استهلاك {r.consumption}
                     </div>
@@ -432,7 +460,7 @@ function ReadingsPage() {
                   return (
                     <TableRow key={r.id}>
                       <TableCell className="text-xs">{new Date(r.created_at).toLocaleDateString("ar-EG")}</TableCell>
-                      <TableCell className="font-mono">{r.meter_number}</TableCell>
+                      <TableCell className="font-mono">{meterById.get(r.meter_id)?.serial ?? "—"}</TableCell>
                       <TableCell>{c?.name ?? "—"}</TableCell>
                       <TableCell>{r.previous}</TableCell>
                       <TableCell>{r.current_reading}</TableCell>

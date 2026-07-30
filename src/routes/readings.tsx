@@ -215,7 +215,7 @@ function ReadingsPage() {
   async function saveReading() {
     if (!tenantId || !user) return toast.error("لا توجد جلسة نشطة");
     if (!selectedCustomer) return toast.error("اختر مشتركاً");
-    if (!meterNumber.trim()) return toast.error("رقم العداد مطلوب");
+    if (!selectedMeter) return toast.error("لا يوجد عداد مرتبط بهذا المشترك");
     if (current === "" || Number.isNaN(+current)) return toast.error("أدخل القراءة الحالية");
 
     if (ocrSerial &&
@@ -246,8 +246,9 @@ function ReadingsPage() {
       // 2) Insert reading — triggers compute previous/consumption + bill
       const { error } = await supabase.from("water_readings").insert({
         tenant_id: tenantId,
-        customer_id: selectedCustomer.id,
-        meter_number: meterNumber.trim(),
+        // customer_id / previous / consumption / status are derived server-side
+        // from the meter and its active assignment.
+        meter_id: selectedMeter.id,
         current_reading: +current,
         reader_id: user.userId,
         photo_url: photoUrl,
@@ -338,7 +339,7 @@ function ReadingsPage() {
                       className="w-full text-right p-2 hover:bg-muted/50 text-sm flex justify-between items-center gap-3">
                       <span className="font-medium">{c.name}</span>
                       <span className="text-xs text-muted-foreground font-mono" dir="ltr">
-                        {c.meter_number ?? "بدون عداد"} · {c.phone ?? "—"}
+                        {meterByCustomer.get(c.id)?.serial ?? "بدون عداد"} · {c.phone ?? "—"}
                       </span>
                     </button>
                   ))}
@@ -358,7 +359,8 @@ function ReadingsPage() {
             <div className="grid md:grid-cols-2 gap-3">
               <div>
                 <Label>رقم العداد</Label>
-                <Input value={meterNumber} onChange={(e) => setMeterNumber(e.target.value)} dir="ltr" className="font-mono" />
+                <Input value={meterNumber} readOnly dir="ltr" className="font-mono bg-muted/40"
+                  placeholder="يُحدَّد تلقائياً من العداد المرتبط بالمشترك" />
               </div>
               <div>
                 <Label>القراءة الحالية</Label>
@@ -407,7 +409,7 @@ function ReadingsPage() {
               return (
                 <div key={r.id} className="rounded-lg border p-3 grid md:grid-cols-[1fr_auto] gap-3 items-start">
                   <div className="text-xs space-y-1">
-                    <div className="text-sm font-semibold">{c?.name ?? "—"} — <span className="font-mono">{r.meter_number}</span></div>
+                    <div className="text-sm font-semibold">{c?.name ?? "—"} — <span className="font-mono">{meterById.get(r.meter_id)?.serial ?? "—"}</span></div>
                     <div className="text-muted-foreground">
                       قراءة {r.previous} → <span className="text-foreground font-mono">{r.current_reading}</span> · استهلاك {r.consumption}
                     </div>
@@ -458,7 +460,7 @@ function ReadingsPage() {
                   return (
                     <TableRow key={r.id}>
                       <TableCell className="text-xs">{new Date(r.created_at).toLocaleDateString("ar-EG")}</TableCell>
-                      <TableCell className="font-mono">{r.meter_number}</TableCell>
+                      <TableCell className="font-mono">{meterById.get(r.meter_id)?.serial ?? "—"}</TableCell>
                       <TableCell>{c?.name ?? "—"}</TableCell>
                       <TableCell>{r.previous}</TableCell>
                       <TableCell>{r.current_reading}</TableCell>

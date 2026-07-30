@@ -1,14 +1,32 @@
-# Welcome to your Lovable project
+# Water Flow Sim
+
+استخدم المشروع المرفوع كأساس.
+
+أضف بيانات تشغيل تجريبية واقعية (Seed Data) لمشروع مياه المسراخ تشمل:
+
+- 100 مشترك.
+
+- عداد لكل مشترك.
+
+- قراءات تاريخية واقعية لعدة أشهر.
+
+- فواتير مولدة من القراءات.
+
+- مدفوعات، ومتأخرات لبعض المشتركين.
+
+- توزيع منطقي لاستهلاك المياه.
+
+يجب أن تكون جميع البيانات مترابطة ومتوافقة مع قاعدة البيانات الحالية، وتعمل مباشرة بعد تشغيل المشروع دون الحاجة إلى إدخال بيانات يدوياً.
 
 This project was built with [Lovable](https://lovable.dev).
 
 ## Build with Lovable
 
-Open your project in the [Lovable editor](https://lovable.dev) and keep building.
+Continue developing this project in the [Lovable editor](https://lovable.dev/projects/c8807546-01fa-4aa4-b25e-f5ad6c5da5a8).
 
 - **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: connect the project to GitHub and every change made in Lovable is committed straight to your repository.
-- **Full ownership**: this code is yours. Push to your repository and your changes sync back into Lovable, ready for your next prompt.
+- **Stay in sync**: every change made in Lovable is committed straight to this repository.
+- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
 
 ## Development
 
@@ -20,10 +38,3 @@ cd <repository-name>
 npm i
 npm run dev
 ```
-
-## Built with
-
-- TanStack Start
-- TypeScript
-- React
-- Tailwind CSS

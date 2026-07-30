@@ -21,6 +21,8 @@ import type { Database } from "@/integrations/supabase/types";
 type CustomerRow = Database["public"]["Tables"]["customers"]["Row"];
 type ReadingRow = Database["public"]["Tables"]["water_readings"]["Row"];
 type BillRow = Database["public"]["Tables"]["water_bills"]["Row"];
+type MeterRow = Database["public"]["Tables"]["meters"]["Row"];
+type AssignmentRow = Database["public"]["Tables"]["meter_assignments"]["Row"];
 
 export const Route = createFileRoute("/readings")({
   head: () => ({ meta: [{ title: "القراءات — ميزان" }] }),
@@ -33,13 +35,15 @@ function ReadingsPage() {
   const tenantId = user?.tenantId;
 
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
+  const [meters, setMeters] = useState<MeterRow[]>([]);
+  const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [readings, setReadings] = useState<ReadingRow[]>([]);
   const [bills, setBills] = useState<BillRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [q, setQ] = useState("");
   const [customerId, setCustomerId] = useState<string | null>(null);
-  const [meterNumber, setMeterNumber] = useState<string>("");
+  const [meterId, setMeterId] = useState<string | null>(null);
   const [current, setCurrent] = useState<string>("");
   const [cameraOpen, setCameraOpen] = useState(false);
   const [photoBlob, setPhotoBlob] = useState<Blob | null>(null);
@@ -51,25 +55,44 @@ function ReadingsPage() {
   const [tab, setTab] = useState<"input" | "pending" | "log" | "bills">("input");
 
   const selectedCustomer = customerId ? customers.find((c) => c.id === customerId) ?? null : null;
+
+  // Single source of truth for customer↔meter: the open row in meter_assignments.
+  const meterById = useMemo(() => new Map(meters.map((m) => [m.id, m])), [meters]);
+  const meterByCustomer = useMemo(() => {
+    const map = new Map<string, MeterRow>();
+    assignments
+      .filter((a) => !a.ended_at)
+      .forEach((a) => {
+        const m = meterById.get(a.meter_id);
+        if (m) map.set(a.customer_id, m);
+      });
+    return map;
+  }, [assignments, meterById]);
+  const selectedMeter = meterId ? meterById.get(meterId) ?? null : null;
+  const meterNumber = selectedMeter?.serial ?? "";
+
   const lastReading = useMemo(() => {
-    if (!meterNumber) return null;
-    const norm = meterNumber.trim().toUpperCase();
+    if (!meterId) return null;
     return readings
-      .filter((r) => r.meter_number.toUpperCase() === norm)
+      .filter((r) => r.meter_id === meterId && r.status !== "rejected")
       .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))[0] ?? null;
-  }, [readings, meterNumber]);
+  }, [readings, meterId]);
 
   // Initial fetch (RLS scopes automatically by tenant)
   const refresh = useCallback(async () => {
     if (!tenantId) return;
     setLoading(true);
-    const [cs, rs, bs] = await Promise.all([
+    const [cs, ms, asg, rs, bs] = await Promise.all([
       supabase.from("customers").select("*").order("name"),
+      supabase.from("meters").select("*").order("serial"),
+      supabase.from("meter_assignments").select("*").order("started_at", { ascending: false }),
       supabase.from("water_readings").select("*").order("created_at", { ascending: false }).limit(500),
       supabase.from("water_bills").select("*").order("created_at", { ascending: false }).limit(500),
     ]);
     if (cs.error) toast.error("تعذّر جلب المشتركين");
     else setCustomers(cs.data ?? []);
+    if (!ms.error) setMeters(ms.data ?? []);
+    if (!asg.error) setAssignments(asg.data ?? []);
     if (!rs.error) setReadings(rs.data ?? []);
     if (!bs.error) setBills(bs.data ?? []);
     setLoading(false);
@@ -137,16 +160,19 @@ function ReadingsPage() {
     const norm = (v: string) => v.toLowerCase().replace(/[-\s]/g, "");
     return customers.filter((c) => {
       if (c.name.toLowerCase().includes(query)) return true;
-      if (c.meter_number && norm(c.meter_number).includes(norm(query))) return true;
+      const serial = meterByCustomer.get(c.id)?.serial;
+      if (serial && norm(serial).includes(norm(query))) return true;
       if (c.phone && c.phone.includes(query)) return true;
       return false;
     }).slice(0, 15);
-  }, [q, customers]);
+  }, [q, customers, meterByCustomer]);
 
   function pickCustomer(c: CustomerRow) {
+    const m = meterByCustomer.get(c.id) ?? null;
     setCustomerId(c.id);
-    setMeterNumber(c.meter_number ?? "");
-    setQ(`${c.name}${c.meter_number ? " · " + c.meter_number : ""}`);
+    setMeterId(m?.id ?? null);
+    setQ(`${c.name}${m ? " · " + m.serial : ""}`);
+    if (!m) toast.error("لا يوجد عداد مرتبط بهذا المشترك — اربط عداداً من صفحة المشتركين");
   }
 
   function handleOcr(res: OcrResult) {

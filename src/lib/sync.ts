@@ -19,7 +19,9 @@ export interface PendingReading {
   tenantId?: string;
 }
 
-const KEY = "mizan-pending-readings-v1";
+// v2: payload is keyed on real meter records (post meter-architecture migration).
+// Pre-migration queues used synthesized meter ids and are intentionally dropped.
+const KEY = "mizan-pending-readings-v2";
 
 function load(): PendingReading[] {
   if (typeof window === "undefined") return [];

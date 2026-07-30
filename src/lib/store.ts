@@ -381,7 +381,6 @@ export const useStore = create<State>()(
           phone: data.phone,
           directorate: data.directorate,
           address: data.address,
-          meter_number: data.meterNumber,
           status: "active",
           latitude: data.latitude ?? null,
           longitude: data.longitude ?? null,
@@ -416,6 +415,15 @@ export const useStore = create<State>()(
         const nid = hashId(inserted.id);
         idMap.customer.set(nid, inserted.id);
         saveIdMap();
+
+        // Meter identity + customer link live in the DB only (meters / meter_assignments).
+        const { error: assignError } = await supabase.rpc("assign_meter", {
+          _customer_id: inserted.id,
+          _serial: data.meterNumber,
+          _meter_type: data.meterType,
+        });
+        if (assignError) throw new Error(assignError.message);
+
         await get().hydrateFromSupabase();
 
         const after = get();
@@ -426,10 +434,11 @@ export const useStore = create<State>()(
             pay_account: payAccount, status: "active" as const,
             family_members: familyMembers,
           };
+        const serial = data.meterNumber.trim().toUpperCase();
         const meter =
-          after.meters.find((m) => m.customer_id === nid && m.number === data.meterNumber) ?? {
-            id: hashId(`${nid}|${data.meterNumber}`), customer_id: nid,
-            number: data.meterNumber, type: data.meterType, status: "active" as const,
+          after.meters.find((m) => m.customer_id === nid && m.number.toUpperCase() === serial) ?? {
+            id: 0, customer_id: nid,
+            number: serial, type: data.meterType, status: "active" as const,
           };
 
         return { customer, meter };
@@ -488,15 +497,17 @@ export const useStore = create<State>()(
         void (async () => {
           const { data: tenantRow } = await supabase.rpc("current_tenant_id");
           if (!tenantRow) return;
-          const customerUuid = idMap.customer.get(meter.customer_id);
-          if (!customerUuid) return;
+          const meterUuid = idMap.meter.get(meter.id);
+          if (!meterUuid) {
+            toast.error("تعذّر حفظ القراءة: العداد غير متزامن مع الخادم — حدّث الصفحة");
+            return;
+          }
           const { data: inserted } = await supabase
             .from("water_readings")
             .insert({
               tenant_id: tenantRow as unknown as string,
-              customer_id: customerUuid,
-              meter_number: meter.number,
-              // لا تُرسل previous / consumption / status / flag — القاعدة تحسبها.
+              meter_id: meterUuid,
+              // لا تُرسل customer_id / previous / consumption / status / flag — القاعدة تحسبها.
               current_reading: current,
               lat, lng,
               photo_url: photo,

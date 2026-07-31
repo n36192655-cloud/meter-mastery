@@ -879,6 +879,7 @@ export type Database = {
           _installed_at?: string
           _meter_type?: string
           _serial: string
+          _started_at?: string
         }
         Returns: string
       }
@@ -945,6 +946,7 @@ export type Database = {
           _new_serial: string
           _old_meter_status?: string
           _reason?: string
+          _started_at?: string
         }
         Returns: string
       }

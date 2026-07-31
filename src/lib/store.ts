@@ -450,14 +450,59 @@ export const useStore = create<State>()(
         customers: s.customers.map((x) => (x.id === id ? { ...x, ...c } : x)),
       })),
 
-      deleteCustomer: (id) => set((s) => ({
-        // Cleanup of orphaned records: cascade-remove meters, readings, bills.
-        // Server-side ON DELETE CASCADE handles the DB side.
-        customers: s.customers.filter((x) => x.id !== id),
-        meters: s.meters.filter((m) => m.customer_id !== id),
-        bills: s.bills.filter((b) => b.customer_id !== id),
-        readings: s.readings.filter((r) => s.meters.find((m) => m.id === r.meter_id)?.customer_id !== id),
-      })),
+      // إيقاف المشترك: لا يُحذف أبداً لأن القراءات والفواتير مرتبطة به تاريخياً.
+      // يُعلَّق في قاعدة البيانات ويُحرَّر عدّاده عبر unassign_meter.
+      deactivateCustomer: async (id, reason) => {
+        const uuid = idMap.customer.get(id);
+        if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
+        const { error: unassignError } = await supabase.rpc("unassign_meter", {
+          _customer_id: uuid,
+          _reason: reason ?? "customer_deactivated",
+        });
+        if (unassignError) throw new Error(financialError(unassignError.message));
+        const { error } = await supabase
+          .from("customers")
+          .update({ status: "suspended", suspended_reason: reason ?? null })
+          .eq("id", uuid);
+        if (error) throw new Error(error.message);
+        await get().hydrateFromSupabase();
+      },
+
+      assignMeter: async (customerId, serial, initialIndex) => {
+        const uuid = idMap.customer.get(customerId);
+        if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
+        const { error } = await supabase.rpc("assign_meter", {
+          _customer_id: uuid,
+          _serial: serial,
+          _meter_type: "water",
+          _initial_index: initialIndex ?? 0,
+        });
+        if (error) throw new Error(meterError(error.message));
+        await get().hydrateFromSupabase();
+      },
+
+      replaceMeter: async (customerId, newSerial, newInitialIndex) => {
+        const uuid = idMap.customer.get(customerId);
+        if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
+        const { error } = await supabase.rpc("replace_meter", {
+          _customer_id: uuid,
+          _new_serial: newSerial,
+          _new_initial_index: newInitialIndex ?? 0,
+        });
+        if (error) throw new Error(meterError(error.message));
+        await get().hydrateFromSupabase();
+      },
+
+      unassignMeter: async (customerId, reason) => {
+        const uuid = idMap.customer.get(customerId);
+        if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
+        const { error } = await supabase.rpc("unassign_meter", {
+          _customer_id: uuid,
+          _reason: reason ?? "unassigned",
+        });
+        if (error) throw new Error(meterError(error.message));
+        await get().hydrateFromSupabase();
+      },
 
       // المديونية = رصيد المشترك كما تحسبه قاعدة البيانات (recalc_customer_balance).
       // لا يُعاد الحساب محليًا إلا للصفوف غير المتزامنة أو عند استثناء فاتورة.

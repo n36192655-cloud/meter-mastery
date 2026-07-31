@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Plus, Search, Trash2, Droplets, ShieldCheck, MapPin, Loader2 } from "lucide-react";
+import { Plus, Search, Droplets, ShieldCheck, MapPin, Loader2, Wrench, Ban } from "lucide-react";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/customers")({
@@ -34,11 +34,58 @@ interface Form {
 const EMPTY: Form = { name: "", phone: "", directorate: TAIZ_DIRECTORATES[0], address: "", meterType: "water", meterNumber: "", familyMembers: 5 };
 
 function CustomersPage() {
-  const { customers, meters, adminCreateSubscriber, deleteCustomer } = useStore();
+  const { customers, meters, adminCreateSubscriber, deactivateCustomer } = useStore();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<Form>(EMPTY);
   const [geoBusy, setGeoBusy] = useState(false);
+  const [meterFor, setMeterFor] = useState<number | null>(null);
+  const [meterSerial, setMeterSerial] = useState("");
+  const [meterIndex, setMeterIndex] = useState("0");
+  const [meterBusy, setMeterBusy] = useState(false);
+
+  const activeMeterOf = (customerId: number) =>
+    meters.find((m) => m.customer_id === customerId && m.status === "active") ?? null;
+
+  function openMeterDialog(customerId: number) {
+    setMeterFor(customerId);
+    setMeterSerial("");
+    setMeterIndex("0");
+  }
+
+  async function runMeterOp(op: "assign" | "replace" | "unassign") {
+    if (meterFor == null) return;
+    const store = useStore.getState();
+    setMeterBusy(true);
+    try {
+      if (op === "unassign") {
+        await store.unassignMeter(meterFor);
+        toast.success("تم فك ارتباط العداد — التاريخ محفوظ");
+      } else {
+        const serial = meterSerial.trim();
+        if (!serial) return toast.error("رقم العداد مطلوب");
+        const idx = Number(meterIndex) || 0;
+        if (op === "assign") await store.assignMeter(meterFor, serial, idx);
+        else await store.replaceMeter(meterFor, serial, idx);
+        toast.success(op === "assign" ? "تم ربط العداد" : "تم استبدال العداد — القراءات القديمة بقيت على العداد السابق");
+      }
+      setMeterFor(null);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر تنفيذ العملية");
+    } finally {
+      setMeterBusy(false);
+    }
+  }
+
+  async function deactivate(id: number) {
+    if (!confirm("إيقاف المشترك وفك ارتباط عدّاده؟ القراءات والفواتير تبقى محفوظة.")) return;
+    try {
+      await deactivateCustomer(id, "manual");
+      toast.success("تم إيقاف المشترك");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر إيقاف المشترك");
+    }
+  }
 
   async function captureLocation() {
     setGeoBusy(true);
@@ -196,6 +243,7 @@ function CustomersPage() {
                   <TableHead className="text-right">العدادات</TableHead>
 
                   <TableHead className="text-right">حساب السداد</TableHead>
+                  <TableHead className="text-right">الحالة</TableHead>
                   <TableHead className="text-right"></TableHead>
                 </TableRow>
               </TableHeader>
@@ -224,9 +272,19 @@ function CustomersPage() {
                       </TableCell>
                       <TableCell dir="ltr" className="font-mono text-[11px] text-right">{c.pay_account}</TableCell>
                       <TableCell>
-                        <Button size="icon" variant="ghost" onClick={() => { if (confirm("حذف المشترك وكل عداداته؟")) { deleteCustomer(c.id); toast.success("تم الحذف"); } }}>
-                          <Trash2 className="w-4 h-4 text-destructive" />
-                        </Button>
+                        <Badge variant={c.status === "active" ? "secondary" : "outline"}>
+                          {c.status === "active" ? "نشط" : "موقوف"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <Button size="icon" variant="ghost" title="إدارة العداد" onClick={() => openMeterDialog(c.id)}>
+                            <Wrench className="w-4 h-4" />
+                          </Button>
+                          <Button size="icon" variant="ghost" title="إيقاف المشترك" disabled={c.status !== "active"} onClick={() => void deactivate(c.id)}>
+                            <Ban className="w-4 h-4 text-destructive" />
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   );
@@ -236,6 +294,40 @@ function CustomersPage() {
           </div>
         </CardContent>
       </Card>
+
+      <Dialog open={meterFor != null} onOpenChange={(v) => { if (!v) setMeterFor(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>إدارة عداد المشترك</DialogTitle></DialogHeader>
+          {meterFor != null && (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                العداد الحالي:{" "}
+                <span className="font-mono">{activeMeterOf(meterFor)?.number ?? "لا يوجد"}</span>
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>رقم العداد</Label>
+                  <Input dir="ltr" value={meterSerial} onChange={(e) => setMeterSerial(e.target.value)} placeholder="W-1042" />
+                </div>
+                <div>
+                  <Label>القراءة الابتدائية</Label>
+                  <Input dir="ltr" type="number" min={0} value={meterIndex} onChange={(e) => setMeterIndex(e.target.value)} />
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                الاستبدال يُغلق ارتباط العداد القديم ويحتفظ بقراءاته؛ الاستهلاك الجديد يبدأ من القراءة الابتدائية للعداد الجديد.
+              </p>
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            <Button variant="outline" disabled={meterBusy} onClick={() => void runMeterOp("unassign")}>فك الارتباط</Button>
+            <Button variant="secondary" disabled={meterBusy} onClick={() => void runMeterOp("replace")}>استبدال</Button>
+            <Button disabled={meterBusy} onClick={() => void runMeterOp("assign")}>
+              {meterBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : "ربط"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

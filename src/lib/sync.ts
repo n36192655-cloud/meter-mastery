@@ -2,26 +2,32 @@ import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import { supabase } from "./supabase";
 import { toast } from "sonner";
+import type { Database } from "@/integrations/supabase/types";
 
-// Pending water-reading queue kept in localStorage so meter readers can
-// keep working in low-connectivity zones. When the browser comes back
-// online we flush the queue to the local store AND broadcast to any
-// other online sessions of the same tenant via Supabase Realtime.
+type ReadingInsert = Database["public"]["Tables"]["water_readings"]["Insert"];
+
+// Pending water-reading queue kept in localStorage so meter readers can keep
+// working in low-connectivity zones. On reconnect the queue is flushed
+// straight into `water_readings`; the database owns previous index,
+// consumption, anomaly flags, status and billing. `clientId` is sent as
+// `client_uuid`, which is UNIQUE per tenant — replays are no-ops.
 export interface PendingReading {
   clientId: string;
-  meterId: number;
+  /** meters.id (uuid) — the only meter identity in the system. */
+  meterId: string;
   current: number;
-  imageData?: string;
+  readingDate?: string;
   createdAt: string;
   by?: string;
-  latitude: number;
-  longitude: number;
+  latitude?: number;
+  longitude?: number;
+  accuracy?: number;
   tenantId?: string;
 }
 
-// v2: payload is keyed on real meter records (post meter-architecture migration).
-// Pre-migration queues used synthesized meter ids and are intentionally dropped.
-const KEY = "mizan-pending-readings-v2";
+// v3: payload carries the real meters.id uuid and is flushed to the database
+// (v1/v2 payloads used client-side ids and are intentionally dropped).
+const KEY = "mizan-pending-readings-v3";
 
 function load(): PendingReading[] {
   if (typeof window === "undefined") return [];
@@ -60,42 +66,48 @@ export function removePending(clientId: string) {
   save(load().filter((p) => p.clientId !== clientId));
 }
 
-export function syncPending(): { synced: number } {
+export async function syncPending(): Promise<{ synced: number }> {
   const list = load();
   if (!list.length) return { synced: 0 };
 
-  const store = useStore.getState();
   let n = 0;
   const remaining: PendingReading[] = [];
 
   for (const p of list) {
-    try {
-      store.addReadingWithBill({
-        meterId: p.meterId,
-        current: p.current,
-        photo: p.imageData,
-        by: p.by,
-        lat: p.latitude,
-        lng: p.longitude,
-      });
-      // Fire-and-forget realtime broadcast so the Manager dashboard and
-      // Collector bills view update instantly on all connected devices.
-      if (p.tenantId) {
-        void broadcastTenantEvent(p.tenantId, "reading", {
-          meterId: p.meterId,
-          current: p.current,
-          by: p.by,
-          at: new Date().toISOString(),
-        });
-      }
-      n++;
-    } catch (error) {
-      toast.error(`تعذّرت مزامنة قراءة مؤجلة: ${(error as Error).message}`);
+    const { data: tenantRow } = await supabase.rpc("current_tenant_id");
+    const tenantId = p.tenantId ?? (tenantRow as unknown as string | null);
+    if (!tenantId) { remaining.push(p); continue; }
+
+    const { error } = await supabase.from("water_readings").insert({
+      tenant_id: tenantId,
+      meter_id: p.meterId,
+      current_reading: p.current,
+      reading_date: p.readingDate,
+      client_uuid: p.clientId,
+      lat: p.latitude ?? null,
+      lng: p.longitude ?? null,
+      accuracy: p.accuracy ?? null,
+      gps_verified: p.latitude != null,
+      // customer_id is derived by the database trigger from the meter assignment.
+    } as ReadingInsert);
+
+    // 23505 = already stored under this client_uuid → the queue entry is done.
+    const duplicate = error?.code === "23505";
+    if (error && !duplicate) {
+      toast.error(`تعذّرت مزامنة قراءة مؤجلة: ${error.message}`);
       remaining.push(p);
+      continue;
+    }
+    n++;
+    if (p.tenantId) {
+      void broadcastTenantEvent(p.tenantId, "reading", {
+        meterId: p.meterId, current: p.current, by: p.by, at: new Date().toISOString(),
+      });
     }
   }
 
   save(remaining);
+  if (n > 0) void useStore.getState().hydrateFromSupabase();
   return { synced: n };
 }
 
@@ -144,10 +156,11 @@ export function useOnlineStatus() {
     const on = () => {
       setOnline(true);
       setTimeout(() => {
-        const result = syncPending();
-        if (result.synced > 0) {
-          console.log(`[Mizan] synced ${result.synced} pending readings.`);
-        }
+        void syncPending().then((result) => {
+          if (result.synced > 0) {
+            toast.success(`تمت مزامنة ${result.synced} قراءة مؤجلة`);
+          }
+        });
       }, 1000);
     };
     const off = () => setOnline(false);

@@ -19,7 +19,7 @@ export interface Customer {
   directorate?: string;
   address?: string;
   pay_account: string;
-  status?: "active" | "pending" | "rejected";
+  status?: "active" | "pending" | "rejected" | "suspended";
   submitted_by?: string;
   submitted_at?: string;
   latitude?: number;
@@ -203,6 +203,17 @@ function financialError(message: string): string {
   return message;
 }
 
+/** ترجمة أخطاء عمليات العدادات القادمة من دوال الخادم. */
+function meterError(message: string): string {
+  const m = message.toLowerCase();
+  if (m.includes("already assigned to another customer")) return "رقم العداد مرتبط بمشترك آخر";
+  if (m.includes("serial is required")) return "رقم العداد مطلوب";
+  if (m.includes("customer not found")) return "المشترك غير موجود";
+  if (m.includes("forbidden")) return "لا تملك صلاحية إدارة العدادات";
+  if (m.includes("not authenticated")) return "انتهت الجلسة — سجّل الدخول مجدداً";
+  return message;
+}
+
 interface State {
   customers: Customer[];
   meters: Meter[];
@@ -221,13 +232,14 @@ interface State {
   }) => Promise<{ customer: Customer; meter: Meter }>;
 
   updateCustomer: (id: number, c: Partial<Customer>) => void;
-  deleteCustomer: (id: number) => void;
-  addReadingWithBill: (input: {
-    meterId: number; current: number; photo?: string; ocrSerial?: string;
-    lat?: number; lng?: number; accuracy?: number; by?: string;
-  }) => { reading: Reading; bill: Bill | null };
+  /** Subscribers are never hard-deleted (readings/bills reference them).
+   *  They are suspended in the database and their meter is released. */
+  deactivateCustomer: (id: number, reason?: string) => Promise<void>;
+  assignMeter: (customerId: number, serial: string, initialIndex?: number) => Promise<void>;
+  replaceMeter: (customerId: number, newSerial: string, newInitialIndex?: number) => Promise<void>;
+  unassignMeter: (customerId: number, reason?: string) => Promise<void>;
   approveReading: (id: number) => void;
-  rejectReading: (id: number) => void;
+  rejectReading: (id: number, reason?: string) => void;
   addPayment: (input: { billId: number; amount: number; method: PaymentMethod | string; by?: string }) => Payment;
   approvePayment: (id: number) => void;
   rejectPayment: (id: number) => void;
@@ -280,7 +292,11 @@ export const useStore = create<State>()(
             directorate: c.directorate ?? undefined,
             address: c.address ?? undefined,
             pay_account: c.pay_account ?? payAccountFor(nid),
-            status: (c.status === "active" ? "active" : "pending") as Customer["status"],
+            status: (c.status === "active"
+              ? "active"
+              : c.status === "suspended"
+                ? "suspended"
+                : "pending") as Customer["status"],
             latitude: c.latitude ?? undefined, longitude: c.longitude ?? undefined,
             geo_accuracy: c.geo_accuracy ?? undefined,
             geo_captured_at: c.geo_captured_at ?? undefined,
@@ -449,14 +465,59 @@ export const useStore = create<State>()(
         customers: s.customers.map((x) => (x.id === id ? { ...x, ...c } : x)),
       })),
 
-      deleteCustomer: (id) => set((s) => ({
-        // Cleanup of orphaned records: cascade-remove meters, readings, bills.
-        // Server-side ON DELETE CASCADE handles the DB side.
-        customers: s.customers.filter((x) => x.id !== id),
-        meters: s.meters.filter((m) => m.customer_id !== id),
-        bills: s.bills.filter((b) => b.customer_id !== id),
-        readings: s.readings.filter((r) => s.meters.find((m) => m.id === r.meter_id)?.customer_id !== id),
-      })),
+      // إيقاف المشترك: لا يُحذف أبداً لأن القراءات والفواتير مرتبطة به تاريخياً.
+      // يُعلَّق في قاعدة البيانات ويُحرَّر عدّاده عبر unassign_meter.
+      deactivateCustomer: async (id, reason) => {
+        const uuid = idMap.customer.get(id);
+        if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
+        const { error: unassignError } = await supabase.rpc("unassign_meter", {
+          _customer_id: uuid,
+          _reason: reason ?? "customer_deactivated",
+        });
+        if (unassignError) throw new Error(financialError(unassignError.message));
+        const { error } = await supabase
+          .from("customers")
+          .update({ status: "suspended", suspended_reason: reason ?? null })
+          .eq("id", uuid);
+        if (error) throw new Error(error.message);
+        await get().hydrateFromSupabase();
+      },
+
+      assignMeter: async (customerId, serial, initialIndex) => {
+        const uuid = idMap.customer.get(customerId);
+        if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
+        const { error } = await supabase.rpc("assign_meter", {
+          _customer_id: uuid,
+          _serial: serial,
+          _meter_type: "water",
+          _initial_index: initialIndex ?? 0,
+        });
+        if (error) throw new Error(meterError(error.message));
+        await get().hydrateFromSupabase();
+      },
+
+      replaceMeter: async (customerId, newSerial, newInitialIndex) => {
+        const uuid = idMap.customer.get(customerId);
+        if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
+        const { error } = await supabase.rpc("replace_meter", {
+          _customer_id: uuid,
+          _new_serial: newSerial,
+          _new_initial_index: newInitialIndex ?? 0,
+        });
+        if (error) throw new Error(meterError(error.message));
+        await get().hydrateFromSupabase();
+      },
+
+      unassignMeter: async (customerId, reason) => {
+        const uuid = idMap.customer.get(customerId);
+        if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
+        const { error } = await supabase.rpc("unassign_meter", {
+          _customer_id: uuid,
+          _reason: reason ?? "unassigned",
+        });
+        if (error) throw new Error(meterError(error.message));
+        await get().hydrateFromSupabase();
+      },
 
       // المديونية = رصيد المشترك كما تحسبه قاعدة البيانات (recalc_customer_balance).
       // لا يُعاد الحساب محليًا إلا للصفوف غير المتزامنة أو عند استثناء فاتورة.
@@ -471,57 +532,6 @@ export const useStore = create<State>()(
           .reduce((a, b) => a + billBalance(b, s.payments), 0);
       },
 
-
-      // مصدر الحقيقة الوحيد لمنطق القراءة هو قاعدة البيانات:
-      //   tg_reading_before_insert  → القراءة السابقة + الاستهلاك + كشف الشذوذ + الحالة
-      //   tg_reading_after_write    → إصدار الفاتورة (issue_bill_for_reading)
-      // العميل لا يحسب أياً من ذلك؛ يكتفي بصف مؤقت للعرض ثم يعيد المزامنة.
-      addReadingWithBill: ({ meterId, current, photo, ocrSerial, lat, lng, accuracy, by }) => {
-        const s = get();
-        const meter = s.meters.find((m) => m.id === meterId);
-        if (!meter) return { reading: null as unknown as Reading, bill: null };
-
-        const rid = Math.max(0, ...s.readings.map((r) => r.id)) + 1;
-        const reading: Reading = {
-          id: rid, serial: nextSerial("RD", rid),
-          meter_id: meterId,
-          // قيم مؤقتة للعرض فقط — تُستبدل بقيم قاعدة البيانات بعد المزامنة.
-          previous: 0, current, consumption: 0,
-          date: new Date().toISOString(), flag: "ok",
-          status: "pending_approval",
-          photo, ocr_serial: ocrSerial, lat, lng, accuracy, by,
-        };
-
-        set({ readings: [...s.readings, reading] });
-
-        void (async () => {
-          const { data: tenantRow } = await supabase.rpc("current_tenant_id");
-          if (!tenantRow) return;
-          const meterUuid = idMap.meter.get(meter.id);
-          if (!meterUuid) {
-            toast.error("تعذّر حفظ القراءة: العداد غير متزامن مع الخادم — حدّث الصفحة");
-            return;
-          }
-          const { data: inserted } = await supabase
-            .from("water_readings")
-            .insert({
-              tenant_id: tenantRow as unknown as string,
-              meter_id: meterUuid,
-              // لا تُرسل customer_id / previous / consumption / status / flag — القاعدة تحسبها.
-              current_reading: current,
-              lat, lng,
-              photo_url: photo,
-              client_uuid: `local-${rid}`,
-            })
-            .select("*").single();
-          if (inserted) {
-            idMap.reading.set(rid, inserted.id);
-            await get().hydrateFromSupabase();
-          }
-
-        })();
-        return { reading, bill: null };
-      },
 
 
       // الاعتماد يتم على الخادم (approve_reading) الذي يُصدر الفاتورة، ثم نعيد المزامنة.
@@ -550,24 +560,23 @@ export const useStore = create<State>()(
         })();
       },
 
-      // الرفض لا يحذف أي فاتورة محليًا (لم تعد تُنشأ محليًا)؛ نحدّث حالة القراءة
-      // على الخادم ثم نعيد المزامنة ليعكس العرض حالة قاعدة البيانات.
-      rejectReading: (id) => {
+      // الرفض عبر reject_reading: يُلغي الفاتورة المرتبطة، يعيد حساب رصيد
+      // المشترك، ويسجّل العملية في سجل التدقيق — كل ذلك في معاملة واحدة.
+      rejectReading: (id, reason) => {
         set((s) => ({
           readings: s.readings.map((r) => r.id === id ? { ...r, status: "rejected" } : r),
         }));
         const uuid = idMap.reading.get(id);
         if (!uuid) return;
         void (async () => {
-          const { error } = await supabase
-            .from("water_readings")
-            .update({ status: "rejected" })
-            .eq("id", uuid);
+          const { error } = await (supabase as unknown as {
+            rpc: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
+          }).rpc("reject_reading", { _reading_id: uuid, _reason: reason ?? null });
           if (error) {
             set((s) => ({
               readings: s.readings.map((r) => r.id === id ? { ...r, status: "pending_approval" } : r),
             }));
-            toast.error("فشل رفض القراءة");
+            toast.error(`فشل رفض القراءة: ${financialError(error.message)}`);
             return;
           }
           await get().hydrateFromSupabase();

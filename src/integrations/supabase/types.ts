@@ -759,12 +759,14 @@ export type Database = {
       water_readings: {
         Row: {
           accuracy: number | null
+          approved_at: string | null
+          approved_by: string | null
           client_uuid: string | null
           consumption: number | null
           created_at: string
           created_by: string | null
           current_reading: number
-          customer_id: string | null
+          customer_id: string
           flag: string | null
           gps_verified: boolean
           id: string
@@ -776,18 +778,23 @@ export type Database = {
           previous: number | null
           reader_id: string | null
           reading_date: string
+          reject_reason: string | null
+          rejected_at: string | null
+          rejected_by: string | null
           status: string
           tenant_id: string
           updated_at: string
         }
         Insert: {
           accuracy?: number | null
+          approved_at?: string | null
+          approved_by?: string | null
           client_uuid?: string | null
           consumption?: number | null
           created_at?: string
           created_by?: string | null
           current_reading: number
-          customer_id?: string | null
+          customer_id: string
           flag?: string | null
           gps_verified?: boolean
           id?: string
@@ -799,18 +806,23 @@ export type Database = {
           previous?: number | null
           reader_id?: string | null
           reading_date?: string
+          reject_reason?: string | null
+          rejected_at?: string | null
+          rejected_by?: string | null
           status?: string
           tenant_id: string
           updated_at?: string
         }
         Update: {
           accuracy?: number | null
+          approved_at?: string | null
+          approved_by?: string | null
           client_uuid?: string | null
           consumption?: number | null
           created_at?: string
           created_by?: string | null
           current_reading?: number
-          customer_id?: string | null
+          customer_id?: string
           flag?: string | null
           gps_verified?: boolean
           id?: string
@@ -822,6 +834,9 @@ export type Database = {
           previous?: number | null
           reader_id?: string | null
           reading_date?: string
+          reject_reason?: string | null
+          rejected_at?: string | null
+          rejected_by?: string | null
           status?: string
           tenant_id?: string
           updated_at?: string
@@ -864,6 +879,7 @@ export type Database = {
           _installed_at?: string
           _meter_type?: string
           _serial: string
+          _started_at?: string
         }
         Returns: string
       }
@@ -919,6 +935,10 @@ export type Database = {
         Args: { _payment_id: string; _reason?: string }
         Returns: undefined
       }
+      reject_reading: {
+        Args: { _reading_id: string; _reason?: string }
+        Returns: undefined
+      }
       replace_meter: {
         Args: {
           _customer_id: string
@@ -926,6 +946,7 @@ export type Database = {
           _new_serial: string
           _old_meter_status?: string
           _reason?: string
+          _started_at?: string
         }
         Returns: string
       }

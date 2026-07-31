@@ -16,6 +16,7 @@ import {
 import { fmtYER } from "@/lib/pricing";
 import { MeterCamera, type OcrResult } from "@/components/meter-camera";
 import { getGeoFix, type GeoFix } from "@/lib/geolocation";
+import { addPending } from "@/lib/sync";
 import type { Database } from "@/integrations/supabase/types";
 
 type CustomerRow = Database["public"]["Tables"]["customers"]["Row"];
@@ -52,6 +53,7 @@ function ReadingsPage() {
   const [geo, setGeo] = useState<GeoFix | null>(null);
   const [geoBusy, setGeoBusy] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [readingDate, setReadingDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [tab, setTab] = useState<"input" | "pending" | "log" | "bills">("input");
 
   const selectedCustomer = customerId ? customers.find((c) => c.id === customerId) ?? null : null;
@@ -210,6 +212,7 @@ function ReadingsPage() {
   function resetForm() {
     setCurrent(""); setPhotoBlob(null); setPhotoPreview(undefined);
     setOcrSerial(undefined); setGeo(null);
+    setReadingDate(new Date().toISOString().slice(0, 10));
   }
 
   async function saveReading() {
@@ -232,6 +235,26 @@ function ReadingsPage() {
 
     setSaving(true);
     try {
+      const clientUuid = crypto.randomUUID();
+
+      // Offline: queue with the same client_uuid the server will de-duplicate on.
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        addPending({
+          clientId: clientUuid,
+          meterId: selectedMeter.id,
+          current: +current,
+          readingDate,
+          by: user.userId,
+          latitude: fix?.lat,
+          longitude: fix?.lng,
+          accuracy: fix?.accuracy,
+          tenantId,
+        });
+        toast.success("لا يوجد اتصال — حُفظت القراءة محلياً وسترسل تلقائياً عند عودة الشبكة");
+        resetForm();
+        return;
+      }
+
       // 1) Upload photo to isolated tenant path
       let photoUrl: string | null = null;
       if (photoBlob) {
@@ -250,13 +273,20 @@ function ReadingsPage() {
         // from the meter and its active assignment.
         meter_id: selectedMeter.id,
         current_reading: +current,
+        reading_date: readingDate,
+        client_uuid: clientUuid,
         reader_id: user.userId,
         photo_url: photoUrl,
         lat: fix?.lat ?? null,
         lng: fix?.lng ?? null,
         gps_verified: !!fix,
-      });
-      if (error) throw new Error(error.message);
+      } as Database["public"]["Tables"]["water_readings"]["Insert"]);
+      if (error) {
+        if (error.code === "23505" && /one_per_meter_day/.test(error.message)) {
+          throw new Error("توجد قراءة مسجلة لهذا العداد في نفس التاريخ");
+        }
+        throw new Error(error.message);
+      }
 
       toast.success("تم حفظ القراءة — يجري إصدار الفاتورة تلقائياً");
       resetForm();
@@ -271,10 +301,19 @@ function ReadingsPage() {
     toast.success("تم الاعتماد — ستصدر الفاتورة تلقائياً");
   }
   async function reject(id: string) {
-    const { error } = await supabase
-      .from("water_readings").update({ status: "rejected" }).eq("id", id);
-    if (error) return toast.error("فشل الرفض");
-    toast.info("تم الرفض");
+    const reason = window.prompt("سبب الرفض؟") ?? undefined;
+    const { error } = await (supabase as unknown as {
+      rpc: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
+    }).rpc("reject_reading", { _reading_id: id, _reason: reason ?? null });
+    if (error) {
+      return toast.error(
+        /already has payments/.test(error.message)
+          ? "تعذّر الرفض: الفاتورة عليها دفعات مسجلة"
+          : "فشل الرفض: " + error.message,
+      );
+    }
+    toast.info("تم الرفض وإلغاء الفاتورة المرتبطة");
+    void refresh();
   }
 
   async function photoSignedUrl(path: string | null): Promise<string | null> {
@@ -365,6 +404,20 @@ function ReadingsPage() {
               <div>
                 <Label>القراءة الحالية</Label>
                 <Input type="number" value={current} onChange={(e) => setCurrent(e.target.value)} />
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-3">
+              <div>
+                <Label>تاريخ القراءة</Label>
+                <Input
+                  type="date" dir="ltr" value={readingDate}
+                  max={new Date().toISOString().slice(0, 10)}
+                  onChange={(e) => setReadingDate(e.target.value)}
+                />
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  القراءات بأثر رجعي تُحفظ بانتظار اعتماد المدير.
+                </p>
               </div>
             </div>
 

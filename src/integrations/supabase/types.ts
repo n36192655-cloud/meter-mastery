@@ -766,7 +766,7 @@ export type Database = {
           created_at: string
           created_by: string | null
           current_reading: number
-          customer_id: string | null
+          customer_id: string
           flag: string | null
           gps_verified: boolean
           id: string
@@ -794,7 +794,7 @@ export type Database = {
           created_at?: string
           created_by?: string | null
           current_reading: number
-          customer_id?: string | null
+          customer_id: string
           flag?: string | null
           gps_verified?: boolean
           id?: string
@@ -822,7 +822,7 @@ export type Database = {
           created_at?: string
           created_by?: string | null
           current_reading?: number
-          customer_id?: string | null
+          customer_id?: string
           flag?: string | null
           gps_verified?: boolean
           id?: string

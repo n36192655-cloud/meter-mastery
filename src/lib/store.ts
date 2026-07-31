@@ -221,13 +221,14 @@ interface State {
   }) => Promise<{ customer: Customer; meter: Meter }>;
 
   updateCustomer: (id: number, c: Partial<Customer>) => void;
-  deleteCustomer: (id: number) => void;
-  addReadingWithBill: (input: {
-    meterId: number; current: number; photo?: string; ocrSerial?: string;
-    lat?: number; lng?: number; accuracy?: number; by?: string;
-  }) => { reading: Reading; bill: Bill | null };
+  /** Subscribers are never hard-deleted (readings/bills reference them).
+   *  They are suspended in the database and their meter is released. */
+  deactivateCustomer: (id: number, reason?: string) => Promise<void>;
+  assignMeter: (customerId: number, serial: string, initialIndex?: number) => Promise<void>;
+  replaceMeter: (customerId: number, newSerial: string, newInitialIndex?: number) => Promise<void>;
+  unassignMeter: (customerId: number, reason?: string) => Promise<void>;
   approveReading: (id: number) => void;
-  rejectReading: (id: number) => void;
+  rejectReading: (id: number, reason?: string) => void;
   addPayment: (input: { billId: number; amount: number; method: PaymentMethod | string; by?: string }) => Payment;
   approvePayment: (id: number) => void;
   rejectPayment: (id: number) => void;

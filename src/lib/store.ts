@@ -529,57 +529,6 @@ export const useStore = create<State>()(
       },
 
 
-      // مصدر الحقيقة الوحيد لمنطق القراءة هو قاعدة البيانات:
-      //   tg_reading_before_insert  → القراءة السابقة + الاستهلاك + كشف الشذوذ + الحالة
-      //   tg_reading_after_write    → إصدار الفاتورة (issue_bill_for_reading)
-      // العميل لا يحسب أياً من ذلك؛ يكتفي بصف مؤقت للعرض ثم يعيد المزامنة.
-      addReadingWithBill: ({ meterId, current, photo, ocrSerial, lat, lng, accuracy, by }) => {
-        const s = get();
-        const meter = s.meters.find((m) => m.id === meterId);
-        if (!meter) return { reading: null as unknown as Reading, bill: null };
-
-        const rid = Math.max(0, ...s.readings.map((r) => r.id)) + 1;
-        const reading: Reading = {
-          id: rid, serial: nextSerial("RD", rid),
-          meter_id: meterId,
-          // قيم مؤقتة للعرض فقط — تُستبدل بقيم قاعدة البيانات بعد المزامنة.
-          previous: 0, current, consumption: 0,
-          date: new Date().toISOString(), flag: "ok",
-          status: "pending_approval",
-          photo, ocr_serial: ocrSerial, lat, lng, accuracy, by,
-        };
-
-        set({ readings: [...s.readings, reading] });
-
-        void (async () => {
-          const { data: tenantRow } = await supabase.rpc("current_tenant_id");
-          if (!tenantRow) return;
-          const meterUuid = idMap.meter.get(meter.id);
-          if (!meterUuid) {
-            toast.error("تعذّر حفظ القراءة: العداد غير متزامن مع الخادم — حدّث الصفحة");
-            return;
-          }
-          const { data: inserted } = await supabase
-            .from("water_readings")
-            .insert({
-              tenant_id: tenantRow as unknown as string,
-              meter_id: meterUuid,
-              // لا تُرسل customer_id / previous / consumption / status / flag — القاعدة تحسبها.
-              current_reading: current,
-              lat, lng,
-              photo_url: photo,
-              client_uuid: `local-${rid}`,
-            })
-            .select("*").single();
-          if (inserted) {
-            idMap.reading.set(rid, inserted.id);
-            await get().hydrateFromSupabase();
-          }
-
-        })();
-        return { reading, bill: null };
-      },
-
 
       // الاعتماد يتم على الخادم (approve_reading) الذي يُصدر الفاتورة، ثم نعيد المزامنة.
       approveReading: (id) => {

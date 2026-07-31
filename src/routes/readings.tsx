@@ -280,7 +280,7 @@ function ReadingsPage() {
         lat: fix?.lat ?? null,
         lng: fix?.lng ?? null,
         gps_verified: !!fix,
-      });
+      } as Database["public"]["Tables"]["water_readings"]["Insert"]);
       if (error) {
         if (error.code === "23505" && /one_per_meter_day/.test(error.message)) {
           throw new Error("توجد قراءة مسجلة لهذا العداد في نفس التاريخ");

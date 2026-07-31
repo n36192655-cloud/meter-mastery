@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import { useStore } from "./store";
 import { supabase } from "./supabase";
 import { toast } from "sonner";
+import type { Database } from "@/integrations/supabase/types";
+
+type ReadingInsert = Database["public"]["Tables"]["water_readings"]["Insert"];
 
 // Pending water-reading queue kept in localStorage so meter readers can keep
 // working in low-connectivity zones. On reconnect the queue is flushed
@@ -85,7 +88,8 @@ export async function syncPending(): Promise<{ synced: number }> {
       lng: p.longitude ?? null,
       accuracy: p.accuracy ?? null,
       gps_verified: p.latitude != null,
-    });
+      // customer_id is derived by the database trigger from the meter assignment.
+    } as ReadingInsert);
 
     // 23505 = already stored under this client_uuid → the queue entry is done.
     const duplicate = error?.code === "23505";

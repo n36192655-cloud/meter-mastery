@@ -19,7 +19,7 @@ export interface Customer {
   directorate?: string;
   address?: string;
   pay_account: string;
-  status?: "active" | "pending" | "rejected";
+  status?: "active" | "pending" | "rejected" | "suspended";
   submitted_by?: string;
   submitted_at?: string;
   latitude?: number;
@@ -292,7 +292,11 @@ export const useStore = create<State>()(
             directorate: c.directorate ?? undefined,
             address: c.address ?? undefined,
             pay_account: c.pay_account ?? payAccountFor(nid),
-            status: (c.status === "active" ? "active" : "pending") as Customer["status"],
+            status: (c.status === "active"
+              ? "active"
+              : c.status === "suspended"
+                ? "suspended"
+                : "pending") as Customer["status"],
             latitude: c.latitude ?? undefined, longitude: c.longitude ?? undefined,
             geo_accuracy: c.geo_accuracy ?? undefined,
             geo_captured_at: c.geo_captured_at ?? undefined,

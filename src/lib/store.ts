@@ -556,24 +556,23 @@ export const useStore = create<State>()(
         })();
       },
 
-      // الرفض لا يحذف أي فاتورة محليًا (لم تعد تُنشأ محليًا)؛ نحدّث حالة القراءة
-      // على الخادم ثم نعيد المزامنة ليعكس العرض حالة قاعدة البيانات.
-      rejectReading: (id) => {
+      // الرفض عبر reject_reading: يُلغي الفاتورة المرتبطة، يعيد حساب رصيد
+      // المشترك، ويسجّل العملية في سجل التدقيق — كل ذلك في معاملة واحدة.
+      rejectReading: (id, reason) => {
         set((s) => ({
           readings: s.readings.map((r) => r.id === id ? { ...r, status: "rejected" } : r),
         }));
         const uuid = idMap.reading.get(id);
         if (!uuid) return;
         void (async () => {
-          const { error } = await supabase
-            .from("water_readings")
-            .update({ status: "rejected" })
-            .eq("id", uuid);
+          const { error } = await (supabase as unknown as {
+            rpc: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
+          }).rpc("reject_reading", { _reading_id: uuid, _reason: reason ?? null });
           if (error) {
             set((s) => ({
               readings: s.readings.map((r) => r.id === id ? { ...r, status: "pending_approval" } : r),
             }));
-            toast.error("فشل رفض القراءة");
+            toast.error(`فشل رفض القراءة: ${financialError(error.message)}`);
             return;
           }
           await get().hydrateFromSupabase();

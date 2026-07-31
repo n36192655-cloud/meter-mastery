@@ -759,6 +759,8 @@ export type Database = {
       water_readings: {
         Row: {
           accuracy: number | null
+          approved_at: string | null
+          approved_by: string | null
           client_uuid: string | null
           consumption: number | null
           created_at: string
@@ -776,12 +778,17 @@ export type Database = {
           previous: number | null
           reader_id: string | null
           reading_date: string
+          reject_reason: string | null
+          rejected_at: string | null
+          rejected_by: string | null
           status: string
           tenant_id: string
           updated_at: string
         }
         Insert: {
           accuracy?: number | null
+          approved_at?: string | null
+          approved_by?: string | null
           client_uuid?: string | null
           consumption?: number | null
           created_at?: string
@@ -799,12 +806,17 @@ export type Database = {
           previous?: number | null
           reader_id?: string | null
           reading_date?: string
+          reject_reason?: string | null
+          rejected_at?: string | null
+          rejected_by?: string | null
           status?: string
           tenant_id: string
           updated_at?: string
         }
         Update: {
           accuracy?: number | null
+          approved_at?: string | null
+          approved_by?: string | null
           client_uuid?: string | null
           consumption?: number | null
           created_at?: string
@@ -822,6 +834,9 @@ export type Database = {
           previous?: number | null
           reader_id?: string | null
           reading_date?: string
+          reject_reason?: string | null
+          rejected_at?: string | null
+          rejected_by?: string | null
           status?: string
           tenant_id?: string
           updated_at?: string
@@ -917,6 +932,10 @@ export type Database = {
       }
       reject_payment: {
         Args: { _payment_id: string; _reason?: string }
+        Returns: undefined
+      }
+      reject_reading: {
+        Args: { _reading_id: string; _reason?: string }
         Returns: undefined
       }
       replace_meter: {

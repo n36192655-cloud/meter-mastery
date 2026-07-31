@@ -203,6 +203,17 @@ function financialError(message: string): string {
   return message;
 }
 
+/** ترجمة أخطاء عمليات العدادات القادمة من دوال الخادم. */
+function meterError(message: string): string {
+  const m = message.toLowerCase();
+  if (m.includes("already assigned to another customer")) return "رقم العداد مرتبط بمشترك آخر";
+  if (m.includes("serial is required")) return "رقم العداد مطلوب";
+  if (m.includes("customer not found")) return "المشترك غير موجود";
+  if (m.includes("forbidden")) return "لا تملك صلاحية إدارة العدادات";
+  if (m.includes("not authenticated")) return "انتهت الجلسة — سجّل الدخول مجدداً";
+  return message;
+}
+
 interface State {
   customers: Customer[];
   meters: Meter[];

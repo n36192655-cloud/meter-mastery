@@ -36,18 +36,18 @@ export function NetworkStatus() {
               
               // عمل تأخير بسيط لإعطاء تجربة بصرية ممتازة أثناء الرفع
               setTimeout(() => {
-                try {
-                  const { synced } = syncPending();
-                  if (synced > 0) {
-                    toast.success(`تم بنجاح ترحيل ومزامنة ${synced} قراءة إلى السيرفر الرئيسي!`, { id: "sync-toast" });
-                  } else {
-                    toast.info("لا توجد قراءات صالحة للمزامنة حالياً", { id: "sync-toast" });
-                  }
-                } catch (error) {
-                  toast.error("فشلت المزامنة التلقائية، يرجى التحقق من جودة الإشارة", { id: "sync-toast" });
-                } finally {
-                  setSyncing(false);
-                }
+                void syncPending()
+                  .then(({ synced }) => {
+                    if (synced > 0) {
+                      toast.success(`تم بنجاح ترحيل ومزامنة ${synced} قراءة إلى السيرفر الرئيسي!`, { id: "sync-toast" });
+                    } else {
+                      toast.info("لا توجد قراءات صالحة للمزامنة حالياً", { id: "sync-toast" });
+                    }
+                  })
+                  .catch(() => {
+                    toast.error("فشلت المزامنة التلقائية، يرجى التحقق من جودة الإشارة", { id: "sync-toast" });
+                  })
+                  .finally(() => setSyncing(false));
               }, 1200);
             }}
           >

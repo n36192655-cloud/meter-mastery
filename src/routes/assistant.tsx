@@ -57,7 +57,9 @@ function AssistantPage() {
   }
 
   function refresh() {
-    void syncPending();
+    void syncPending().then(({ synced }) => {
+      toast.success(synced > 0 ? `تمت مزامنة ${synced} إدخال معلّق` : "تم التحديث");
+    });
     setRefreshKey((k) => k + 1);
     // Re-run the last user question to refresh the last card
     const lastUser = [...messages].reverse().find((m) => m.role === "user") as UserMsg | undefined;
@@ -69,7 +71,6 @@ function AssistantPage() {
         return [...m, { role: "assistant", response }];
       });
     }
-    toast.success(synced > 0 ? `تمت مزامنة ${synced} إدخال معلّق` : "تم التحديث");
   }
 
   return (

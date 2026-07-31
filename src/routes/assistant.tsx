@@ -57,7 +57,7 @@ function AssistantPage() {
   }
 
   function refresh() {
-    const { synced } = syncPending();
+    void syncPending();
     setRefreshKey((k) => k + 1);
     // Re-run the last user question to refresh the last card
     const lastUser = [...messages].reverse().find((m) => m.role === "user") as UserMsg | undefined;

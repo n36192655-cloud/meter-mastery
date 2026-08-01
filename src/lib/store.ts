@@ -5,11 +5,9 @@ import { calcConsumption, type MeterType } from "./pricing";
 import { supabase } from "@/integrations/supabase/client";
 import { useTariff } from "./tariff";
 
-
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 /** حالة القراءة كما تخزَّن في قاعدة البيانات (موحّدة بين الواجهة والخادم). */
 export type ReadingStatus = "pending_approval" | "approved" | "rejected";
-
 
 export interface Customer {
   id: number;
@@ -74,7 +72,6 @@ export interface Bill {
   photo?: string;
 }
 
-
 export type PaymentMethod = "نقدي" | "الكريمي";
 
 export interface Payment {
@@ -116,28 +113,25 @@ const DIRECTORATES = [
 ];
 export const TAIZ_DIRECTORATES = DIRECTORATES;
 
-// PRODUCTION MODE: no static seeds. All entities are hydrated from Supabase
-// via `useStore.getState().hydrateFromSupabase()`. Zustand persists only for
-// offline queueing / render continuity.
-
 /**
- * المتبقي على الفاتورة = نفس معادلة الخادم في `record_payment`:
+ * المتبقي على الفاتورة = نفس معادلة الخادم في `process_payment_entry` / `record_payment`:
  *   total - (المدفوع المعتمد) - (المدفوع قيد الاعتماد)
- * المدفوع المعتمد يؤخذ من `water_bills.paid_amount` (مصدر الحقيقة) عند توفره،
- * ولا يُعاد حسابه محليًا إلا للصفوف غير المتزامنة بعد.
+ * المدفوع المعتمد تؤخذ قيمته المباشرة من `water_bills.paid_amount` عند توفرها.
  */
-function billBalance(bill: Bill, payments: Payment[]): number {
+export function billBalance(bill: Bill, payments: Payment[]): number {
+  if (!bill) return 0;
   const approved = bill.paid !== undefined
-    ? bill.paid
+    ? Number(bill.paid)
     : payments
         .filter((p) => p.bill_id === bill.id && p.status === "approved")
-        .reduce((a, p) => a + p.amount, 0);
+        .reduce((a, p) => a + Number(p.amount || 0), 0);
+
   const pending = payments
     .filter((p) => p.bill_id === bill.id && p.status === "pending")
-    .reduce((a, p) => a + p.amount, 0);
-  return Math.max(0, bill.total - approved - pending);
-}
+    .reduce((a, p) => a + Number(p.amount || 0), 0);
 
+  return Math.max(0, Number(bill.total || 0) - approved - pending);
+}
 
 // Stable UUID -> numeric hash so UI keeps numeric IDs while DB uses UUIDs.
 function hashId(uuid: string): number {
@@ -147,8 +141,6 @@ function hashId(uuid: string): number {
 }
 
 // Map: local numeric id <-> Supabase UUID.
-// Persisted to localStorage so financial actions (اعتماد/رفض/تحصيل) keep
-// working immediately after a page refresh, before re-hydration finishes.
 const ID_MAP_KEY = "mizan-idmap-v1";
 type IdMapKind = "customer" | "meter" | "reading" | "bill" | "payment";
 
@@ -232,8 +224,6 @@ interface State {
   }) => Promise<{ customer: Customer; meter: Meter }>;
 
   updateCustomer: (id: number, c: Partial<Customer>) => void;
-  /** Subscribers are never hard-deleted (readings/bills reference them).
-   *  They are suspended in the database and their meter is released. */
   deactivateCustomer: (id: number, reason?: string) => Promise<void>;
   assignMeter: (customerId: number, serial: string, initialIndex?: number) => Promise<void>;
   replaceMeter: (customerId: number, newSerial: string, newInitialIndex?: number) => Promise<void>;
@@ -279,11 +269,13 @@ export const useStore = create<State>()(
           supabase.from("payments").select("*").order("created_at", { ascending: true }),
           supabase.from("production_log").select("*").order("logged_at", { ascending: true }),
         ]);
+
         idMap.customer.clear();
         idMap.meter.clear();
         idMap.reading.clear();
         idMap.bill.clear();
         idMap.payment.clear();
+
         const customers: Customer[] = (cs ?? []).map((c: any) => {
           const nid = hashId(c.id);
           idMap.customer.set(nid, c.id);
@@ -302,15 +294,14 @@ export const useStore = create<State>()(
             geo_captured_at: c.geo_captured_at ?? undefined,
             family_members: Number(c.family_members ?? 5) || 5,
             balance: Number(c.balance ?? 0),
-
           };
         });
-        // Meters are real DB records now. The only customer↔meter link is the
-        // open row in meter_assignments — no client-side synthesis.
-        const openHolder = new Map<string, string>(); // meter uuid -> customer uuid
+
+        const openHolder = new Map<string, string>();
         (as_ ?? []).forEach((a) => {
           if (!a.ended_at) openHolder.set(a.meter_id, a.customer_id);
         });
+
         const meters: Meter[] = (ms ?? []).map((m) => {
           const mid = hashId(m.id);
           idMap.meter.set(mid, m.id);
@@ -340,6 +331,7 @@ export const useStore = create<State>()(
             lat: r.lat ?? undefined, lng: r.lng ?? undefined,
           };
         });
+
         const bills: Bill[] = (bs ?? []).map((b) => {
           const nid = hashId(b.id);
           idMap.bill.set(nid, b.id);
@@ -350,11 +342,11 @@ export const useStore = create<State>()(
             reading_id: b.reading_id ? hashId(b.reading_id) : 0,
             subtotal: Number(b.subtotal), arrears: Number(b.arrears), total: Number(b.total),
             paid: Number(b.paid_amount ?? 0),
-
             status: (b.status as Bill["status"]) ?? "unpaid",
             date: b.issued_at,
           };
         });
+
         const payments: Payment[] = (ps ?? []).map((p: any) => {
           const nid = hashId(p.id);
           idMap.payment.set(nid, p.id);
@@ -369,14 +361,15 @@ export const useStore = create<State>()(
             status,
           };
         });
+
         const productionLogs: ProductionLog[] = (pl ?? []).map((p) => ({
           id: hashId(p.id), type: "water", units: Number(p.produced_m3),
           date: p.logged_at, note: p.notes ?? undefined,
         }));
+
         saveIdMap();
         set({ customers, meters, readings, bills, payments, productionLogs, hydrated: true, seeded: false });
         void useTariff.getState().load();
-
       },
 
       adminCreateSubscriber: async (data) => {
@@ -385,7 +378,6 @@ export const useStore = create<State>()(
         const familyMembers = Math.max(1, Number(data.familyMembers ?? 5) || 5);
         const geoAt = data.latitude != null ? new Date().toISOString() : undefined;
 
-        // Supabase is the source of truth: persist first, then hydrate.
         const { data: tenantRow, error: tenantError } = await supabase.rpc("current_tenant_id");
         if (tenantError || !tenantRow) {
           throw new Error("تعذّر تحديد المؤسسة الحالية — تأكد من تسجيل الدخول بصلاحية مدير");
@@ -405,8 +397,6 @@ export const useStore = create<State>()(
           family_members: familyMembers,
         };
 
-        // pay_account is UNIQUE in the DB: derive a candidate that does not clash
-        // with rows already hydrated, and retry on conflict.
         const taken = new Set(s.customers.map((c) => c.pay_account));
         let payAccount = payAccountFor(cid);
         while (taken.has(payAccount)) payAccount = payAccountFor(Math.floor(Math.random() * 900000) + 100000);
@@ -427,12 +417,10 @@ export const useStore = create<State>()(
         }
         if (!inserted) throw new Error("تعذّر حفظ المشترك في قاعدة البيانات");
 
-
         const nid = hashId(inserted.id);
         idMap.customer.set(nid, inserted.id);
         saveIdMap();
 
-        // Meter identity + customer link live in the DB only (meters / meter_assignments).
         const { error: assignError } = await supabase.rpc("assign_meter", {
           _customer_id: inserted.id,
           _serial: data.meterNumber,
@@ -460,13 +448,10 @@ export const useStore = create<State>()(
         return { customer, meter };
       },
 
-
       updateCustomer: (id, c) => set((s) => ({
         customers: s.customers.map((x) => (x.id === id ? { ...x, ...c } : x)),
       })),
 
-      // إيقاف المشترك: لا يُحذف أبداً لأن القراءات والفواتير مرتبطة به تاريخياً.
-      // يُعلَّق في قاعدة البيانات ويُحرَّر عدّاده عبر unassign_meter.
       deactivateCustomer: async (id, reason) => {
         const uuid = idMap.customer.get(id);
         if (!uuid) throw new Error("المشترك غير متزامن مع الخادم — حدّث الصفحة");
@@ -519,8 +504,6 @@ export const useStore = create<State>()(
         await get().hydrateFromSupabase();
       },
 
-      // المديونية = رصيد المشترك كما تحسبه قاعدة البيانات (recalc_customer_balance).
-      // لا يُعاد الحساب محليًا إلا للصفوف غير المتزامنة أو عند استثناء فاتورة.
       computeArrears: (customerId, excludeBillId) => {
         const s = get();
         const customer = s.customers.find((c) => c.id === customerId);
@@ -532,9 +515,6 @@ export const useStore = create<State>()(
           .reduce((a, b) => a + billBalance(b, s.payments), 0);
       },
 
-
-
-      // الاعتماد يتم على الخادم (approve_reading) الذي يُصدر الفاتورة، ثم نعيد المزامنة.
       approveReading: (id) => {
         set((s) => ({
           readings: s.readings.map((r) => r.id === id ? { ...r, status: "approved" } : r),
@@ -560,8 +540,6 @@ export const useStore = create<State>()(
         })();
       },
 
-      // الرفض عبر reject_reading: يُلغي الفاتورة المرتبطة، يعيد حساب رصيد
-      // المشترك، ويسجّل العملية في سجل التدقيق — كل ذلك في معاملة واحدة.
       rejectReading: (id, reason) => {
         set((s) => ({
           readings: s.readings.map((r) => r.id === id ? { ...r, status: "rejected" } : r),
@@ -583,26 +561,23 @@ export const useStore = create<State>()(
         })();
       },
 
-
-      // Financial writes go through server RPCs (see docs/critical-hardening.sql):
-      //   record_payment  — locks the bill FOR UPDATE, blocks over-payment,
-      //                     idempotent on (tenant_id, client_uuid).
-      //   approve_payment — manager-only, atomically flips status and updates
-      //                     the bill + customer balance.
-      //   reject_payment  — manager-only.
-      //
-      // The client keeps an optimistic row for immediate UI feedback and then
-      // re-hydrates from Supabase (the source of truth) on success or rolls
-      // the optimistic row back on failure.
+      // Phase 1 Conservative Financial RPC Integration
       addPayment: ({ billId, amount, method, by }) => {
         const s = get();
         const clientUuid = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const p: Payment = {
           id: Math.max(0, ...s.payments.map((x) => x.id)) + 1,
-          bill_id: billId, amount, method, date: new Date().toISOString(),
-          status: "pending", by,
+          bill_id: billId,
+          amount,
+          method,
+          date: new Date().toISOString(),
+          status: "pending",
+          by,
         };
+
+        // Optimistic UI update
         set({ payments: [...s.payments, p] });
+
         void (async () => {
           const billUuid = idMap.bill.get(billId);
           if (!billUuid) {
@@ -610,23 +585,38 @@ export const useStore = create<State>()(
             toast.error("تعذّر تسجيل الدفعة: الفاتورة غير متزامنة مع الخادم — حدّث الصفحة وأعد المحاولة");
             return;
           }
-          const { error } = await (supabase as unknown as {
+
+          // Dynamic fallback to support both record_payment and process_payment_entry
+          const rpcClient = supabase as unknown as {
             rpc: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
-          }).rpc("record_payment", {
+          };
+
+          let res = await rpcClient.rpc("record_payment", {
             _bill_id: billUuid,
             _amount: amount,
             _method: method,
             _client_uuid: clientUuid,
           });
-          if (error) {
-            // Roll back the optimistic row so the UI reflects the server truth.
+
+          if (res.error && res.error.message.includes("function") && res.error.message.includes("does not exist")) {
+            res = await rpcClient.rpc("process_payment_entry", {
+              _bill_id: billUuid,
+              _amount: amount,
+              _method: method,
+              _collected_by: by || "System Collector",
+            });
+          }
+
+          if (res.error) {
             set((cur) => ({ payments: cur.payments.filter((x) => x.id !== p.id) }));
-            toast.error(`فشل تسجيل الدفعة: ${financialError(error.message)}`);
+            toast.error(`فشل تسجيل الدفعة: ${financialError(res.error.message)}`);
             return;
           }
+
           await get().hydrateFromSupabase();
           toast.success("تم تسجيل الدفعة — بانتظار اعتماد الإدارة");
         })();
+
         return p;
       },
 
@@ -636,14 +626,23 @@ export const useStore = create<State>()(
           toast.error("تعذّر الاعتماد: الدفعة غير متزامنة مع الخادم — حدّث الصفحة");
           return;
         }
+
         void (async () => {
-          const { error } = await (supabase as unknown as {
+          const rpcClient = supabase as unknown as {
             rpc: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
-          }).rpc("approve_payment", { _payment_id: uuid });
-          if (error) {
-            toast.error(`فشل اعتماد الدفعة: ${financialError(error.message)}`);
+          };
+
+          let res = await rpcClient.rpc("approve_payment", { _payment_id: uuid });
+
+          if (res.error && res.error.message.includes("function") && res.error.message.includes("does not exist")) {
+            res = await rpcClient.rpc("approve_payment_transaction", { _payment_id: uuid });
+          }
+
+          if (res.error) {
+            toast.error(`فشل اعتماد الدفعة: ${financialError(res.error.message)}`);
             return;
           }
+
           await get().hydrateFromSupabase();
           toast.success("تم اعتماد الدفعة وخصمها من رصيد المشترك");
         })();
@@ -655,33 +654,41 @@ export const useStore = create<State>()(
           toast.error("تعذّر الرفض: الدفعة غير متزامنة مع الخادم — حدّث الصفحة");
           return;
         }
+
         void (async () => {
-          const { error } = await (supabase as unknown as {
+          const rpcClient = supabase as unknown as {
             rpc: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }>;
-          }).rpc("reject_payment", { _payment_id: uuid, _reason: null });
-          if (error) {
-            toast.error(`فشل رفض الدفعة: ${financialError(error.message)}`);
+          };
+
+          let res = await rpcClient.rpc("reject_payment", { _payment_id: uuid, _reason: null });
+
+          if (res.error && res.error.message.includes("function") && res.error.message.includes("does not exist")) {
+            res = await rpcClient.rpc("reject_payment_transaction", { _payment_id: uuid });
+          }
+
+          if (res.error) {
+            toast.error(`فشل رفض الدفعة: ${financialError(res.error.message)}`);
             return;
           }
+
           await get().hydrateFromSupabase();
           toast.info("تم رفض الدفعة");
         })();
       },
 
-
       addProductionLog: (p) => set((s) => ({
         productionLogs: [...s.productionLogs, { ...p, id: Math.max(0, ...s.productionLogs.map((x) => x.id)) + 1 }],
       })),
-      
+
       deleteProductionLog: (id) => set((s) => ({
         productionLogs: s.productionLogs.filter((p) => p.id !== id),
       })),
-      
+
       reset: () => set(initial()),
     }),
     {
       name: "mizan-utility-v2",
-      version: 5, // v5 wipes all client-side mock seeds (production hydration)
+      version: 5,
       migrate: (state: unknown, version: number) => {
         const s = state as Partial<State> | undefined;
         if (!s || version < 5) return initial() as unknown as State;
@@ -704,4 +711,3 @@ export const useStore = create<State>()(
 export function useCustomer(id: number) { return useStore((s) => s.customers.find((c) => c.id === id)); }
 export function useMeter(id: number) { return useStore((s) => s.meters.find((m) => m.id === id)); }
 export { calcConsumption };
-export { billBalance };

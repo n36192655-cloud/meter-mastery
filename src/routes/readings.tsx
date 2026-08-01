@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { MeterCamera } from "@/components/meter-camera";
@@ -11,6 +12,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Loader2, CheckCircle2, AlertTriangle, Calculator } from "lucide-react";
 import { toast } from "sonner";
+
+export const Route = createFileRoute("/readings")({
+  component: ReadingsPage,
+});
 
 export default function ReadingsPage() {
   const queryClient = useQueryClient();
@@ -192,14 +197,7 @@ export default function ReadingsPage() {
         });
 
         if (rpcError) {
-          // محاولة بديلة في حال كان معامل الـ RPC المعتمد في Schema لا يحوي البادئة p_
-          const { error: fallbackRpcError } = await supabase.rpc("issue_bill_for_reading", {
-            reading_id: readingData.id,
-          } as any);
-
-          if (fallbackRpcError) {
-            throw new Error(`فشل إصدار الفاتورة عبر RPC: ${rpcError.message}`);
-          }
+          throw new Error(`فشل إصدار الفاتورة عبر RPC: ${rpcError.message}`);
         }
       }
 

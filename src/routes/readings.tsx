@@ -14,7 +14,7 @@ import {
   Check, X, Image as ImageIcon, Loader2, RefreshCw,
 } from "lucide-react";
 import { fmtYER } from "@/lib/pricing";
-import { MeterCamera, type OcrResult } from "@/components/meter-camera";
+import { MeterCamera } from "@/components/meter-camera";
 import { getGeoFix, type GeoFix } from "@/lib/geolocation";
 import { addPending } from "@/lib/sync";
 import type { Database } from "@/integrations/supabase/types";
@@ -175,24 +175,16 @@ function ReadingsPage() {
     if (!m) toast.error("لا يوجد عداد مرتبط بهذا المشترك — اربط عداداً من صفحة المشتركين");
   }
 
-  function handleOcr(res: OcrResult) {
-    setCameraOpen(false);
-    setPhotoPreview(res.imageData);
-    const [meta, b64] = res.imageData.split(",");
-    const mime = meta.match(/data:(.+);base64/)?.[1] ?? "image/jpeg";
-    const bin = atob(b64);
-    const arr = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-    setPhotoBlob(new Blob([arr], { type: mime }));
-    setOcrSerial(res.serial ?? undefined);
-    if (res.reading != null) setCurrent(String(res.reading));
+  function handleCapture(file: File, previewUrl: string) {
+    setPhotoBlob(file);
+    setPhotoPreview(previewUrl);
+    setOcrSerial(undefined);
+    toast.success("تم إرفاق صورة العداد");
+  }
 
-    if (res.serialMatch === "mismatch") {
-      toast.error(`عدم تطابق: العداد الملتقط ${res.serial} لا يطابق ${meterNumber}`);
-      return;
-    }
-    if (res.serialMatch === "match") toast.success(`تطابق ✓ ${res.serial}`);
-    else if (res.reading != null) toast.info(`تم التقاط قراءة ${res.reading}`);
+  function clearPhoto() {
+    setPhotoBlob(null);
+    setPhotoPreview(undefined);
   }
 
   async function captureGeo() {
@@ -355,8 +347,8 @@ function ReadingsPage() {
               <Button size="sm" variant="outline" onClick={captureGeo} disabled={geoBusy}>
                 <MapPin className="w-4 h-4 ms-1" /> {geo ? "✓ موقع مسبق" : "تحديد الموقع"}
               </Button>
-              <Button size="sm" variant="outline" onClick={() => setCameraOpen(true)}>
-                <Camera className="w-4 h-4 ms-1" /> تصوير + OCR
+              <Button size="sm" variant="outline" onClick={() => setCameraOpen((v) => !v)}>
+                <Camera className="w-4 h-4 ms-1" /> {cameraOpen ? "إخفاء الكاميرا" : "تصوير العداد"}
               </Button>
             </div>
           </CardHeader>
@@ -439,12 +431,18 @@ function ReadingsPage() {
         </Card>
       )}
 
-      <MeterCamera
-        open={cameraOpen}
-        onClose={() => setCameraOpen(false)}
-        onCapture={handleOcr}
-        expectedSerial={meterNumber || null}
-      />
+      {tab === "input" && cameraOpen && (
+        <Card>
+          <CardHeader><CardTitle>صورة العداد</CardTitle></CardHeader>
+          <CardContent>
+            <MeterCamera
+              onCapture={handleCapture}
+              onClear={clearPhoto}
+              initialPreview={photoPreview}
+            />
+          </CardContent>
+        </Card>
+      )}
 
       {tab === "pending" && !isReader && (
         <Card>
